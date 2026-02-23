@@ -308,6 +308,11 @@ const evaluateProgress = ref({
 })
 
 const filteredData = computed(() => {
+  /**
+   * 过滤和排序后的股票数据
+   * 支持按搜索文本和评级筛选
+   * 支持按各维度评分排序
+   */
   let data = [...stockPool.value]
   
   if (searchText.value) {
@@ -340,6 +345,10 @@ const paginatedData = computed(() => {
 })
 
 const ratingStats = computed(() => {
+  /**
+   * 统计各评级的股票数量
+   * 用于统计卡片显示
+   */
   const stats = {
     strongRecommended: 0,
     recommended: 0,
@@ -364,6 +373,11 @@ const ratingStats = computed(() => {
 })
 
 const getScoreType = (score) => {
+  /**
+   * 根据评分返回标签类型
+   * @param {number} score - 评分值
+   * @returns {string} Element Plus标签类型
+   */
   if (score >= 90) return 'success'
   if (score >= 70) return 'primary'
   if (score >= 50) return 'warning'
@@ -371,6 +385,11 @@ const getScoreType = (score) => {
 }
 
 const getTrendPoints = (history) => {
+  /**
+   * 计算评分趋势图的SVG折线点坐标
+   * @param {Array} history - 评分历史数组
+   * @returns {string} SVG折线点坐标字符串
+   */
   if (!history || history.length < 2) return ''
   
   const scores = history.map(h => h.score || 0)
@@ -392,6 +411,11 @@ const getTrendPoints = (history) => {
 }
 
 const getTrendColor = (history) => {
+  /**
+   * 根据评分变化趋势返回颜色
+   * @param {Array} history - 评分历史数组
+   * @returns {string} 颜色值（绿色上涨/红色下跌/灰色持平）
+   */
   if (!history || history.length < 2) return '#909399'
   
   const firstScore = history[0].score || 0
@@ -403,6 +427,11 @@ const getTrendColor = (history) => {
 }
 
 const getPriceTrendPoints = (history) => {
+  /**
+   * 计算股价趋势图的SVG折线点坐标
+   * @param {Array} history - 股价历史数组
+   * @returns {string} SVG折线点坐标字符串
+   */
   if (!history || history.length < 2) return ''
   
   const prices = history.map(h => h.price || 0)
@@ -424,6 +453,11 @@ const getPriceTrendPoints = (history) => {
 }
 
 const getScoreClass = (score) => {
+  /**
+   * 根据评分返回CSS类名
+   * @param {number} score - 评分值
+   * @returns {string} CSS类名
+   */
   if (score >= 70) return 'score-good'
   if (score >= 50) return 'score-normal'
   return 'score-bad'

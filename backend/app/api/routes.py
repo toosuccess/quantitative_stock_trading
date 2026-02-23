@@ -315,6 +315,31 @@ async def get_stock_pool_scores():
                 for row in reversed(history_rows) if row['close_price']
             ]
         
+        manager = TradingManager(DB_PATH)
+        manager.connect()
+        try:
+            for stock in stocks:
+                plans = manager.get_trade_plans_by_stock(stock['stock_code'])
+                unfinished_plans = [p for p in plans if p.get('status') in ['待执行', '执行中', 'pending', 'executing']]
+                if unfinished_plans:
+                    total_profit = sum(p.get('profit', 0) or 0 for p in unfinished_plans)
+                    total_buy_amount = sum(p.get('buy_amount', 0) or 0 for p in unfinished_plans)
+                    profit_rate = (total_profit / total_buy_amount * 100) if total_buy_amount > 0 else 0
+                    stock['plan_profit'] = total_profit
+                    stock['plan_profit_rate'] = profit_rate
+                    if total_profit > 0:
+                        stock['plan_status'] = 'profit'
+                    elif total_profit < 0:
+                        stock['plan_status'] = 'loss'
+                    else:
+                        stock['plan_status'] = 'neutral'
+                else:
+                    stock['plan_status'] = None
+                    stock['plan_profit'] = 0
+                    stock['plan_profit_rate'] = 0
+        finally:
+            manager.disconnect()
+        
         return {"stocks": stocks, "count": len(stocks)}
     finally:
         conn.close()

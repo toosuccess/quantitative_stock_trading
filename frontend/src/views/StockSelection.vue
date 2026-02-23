@@ -220,6 +220,13 @@
             <div class="summary-text">{{ scope.row.summary || '-' }}</div>
           </template>
         </el-table-column>
+        <el-table-column label="执行" width="50" align="center">
+          <template #default="scope">
+            <el-tooltip v-if="scope.row.plan_status" :content="getPlanStatusText(scope.row)" placement="top">
+              <span class="plan-status-dot" :class="scope.row.plan_status"></span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="create_time" label="最近打分时间" width="180">
           <template #default="scope">
             <span>{{ scope.row.create_time || '-' }}</span>
@@ -524,6 +531,28 @@ const getNewsDetail = (row) => parseDetail(row.news_detail)
 const getPolicyDetail = (row) => parseDetail(row.policy_detail)
 const getDeductionDetail = (row) => parseDetail(row.deduction_detail)
 
+const getPlanStatusText = (row) => {
+  /**
+   * 根据计划状态返回提示文本
+   * @param {Object} row - 股票数据行
+   * @returns {string} 提示文本
+   */
+  const status = row.plan_status
+  const profit = row.plan_profit || 0
+  const profitRate = row.plan_profit_rate || 0
+  
+  const statusTexts = {
+    'profit': '盈利中',
+    'loss': '亏损中',
+    'neutral': '持仓中'
+  }
+  
+  const profitStr = profit >= 0 ? `+${profit.toFixed(2)}` : profit.toFixed(2)
+  const profitRateStr = profitRate >= 0 ? `+${profitRate.toFixed(2)}%` : `${profitRate.toFixed(2)}%`
+  
+  return `有未完成计划 - ${statusTexts[status] || ''}\n盈亏: ${profitStr}元 (${profitRateStr})`
+}
+
 const handleSortChange = ({ prop, order }) => {
   sortProp.value = prop
   sortOrder.value = order
@@ -720,6 +749,26 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
+.plan-status-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.plan-status-dot.profit {
+  background-color: #f56c6c;
+}
+
+.plan-status-dot.loss {
+  background-color: #67c23a;
+}
+
+.plan-status-dot.neutral {
+  background-color: #909399;
+}
+
 .score-dimensions {
   display: flex;
   gap: 6px;
@@ -749,6 +798,7 @@ onMounted(() => {
 
 .tooltip-content {
   max-width: 400px;
+  white-space: pre-line;
 }
 
 .tooltip-item {

@@ -333,6 +333,31 @@ class TradingManager:
             
             for plan in plans:
                 cursor.execute('''
+                    SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
+                    FROM trade_record 
+                    WHERE plan_id = ? AND trade_type = '买入'
+                ''', (plan['plan_id'],))
+                buy_row = cursor.fetchone()
+                buy_quantity = buy_row['total_quantity'] if buy_row and buy_row['total_quantity'] else 0
+                buy_amount = buy_row['total_amount'] if buy_row and buy_row['total_amount'] else 0
+                
+                cursor.execute('''
+                    SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
+                    FROM trade_record 
+                    WHERE plan_id = ? AND trade_type = '卖出'
+                ''', (plan['plan_id'],))
+                sell_row = cursor.fetchone()
+                sell_quantity = sell_row['total_quantity'] if sell_row and sell_row['total_quantity'] else 0
+                sell_amount = sell_row['total_amount'] if sell_row and sell_row['total_amount'] else 0
+                
+                profit_info = self.calculate_plan_profit(plan, buy_quantity, buy_amount, sell_quantity, sell_amount)
+                plan['profit'] = profit_info['profit']
+                plan['profit_type'] = profit_info['profit_type']
+                plan['holding_quantity'] = profit_info['holding_quantity']
+                plan['buy_amount'] = buy_amount
+                plan['sell_amount'] = sell_amount
+                
+                cursor.execute('''
                     SELECT * FROM trade_record 
                     WHERE plan_id = ?
                     ORDER BY trade_date, trade_time

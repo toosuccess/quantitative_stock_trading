@@ -66,6 +66,31 @@
                 </span>
               </template>
             </el-table-column>
+            <el-table-column prop="holding_quantity" label="持仓数量" width="100">
+              <template #default="scope">
+                {{ scope.row.holding_quantity || 0 }}
+              </template>
+            </el-table-column>
+            <el-table-column label="买入均价" width="100">
+              <template #default="scope">
+                {{ (scope.row.avg_cost_price || 0).toFixed(2) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="当前市价" width="100">
+              <template #default="scope">
+                {{ (scope.row.current_price || 0).toFixed(2) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="剩余数量" width="100">
+              <template #default="scope">
+                {{ scope.row.planned_quantity - (scope.row.holding_quantity || 0) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="持仓金额" width="120">
+              <template #default="scope">
+                {{ ((scope.row.holding_quantity || 0) * (scope.row.current_price || 0)).toFixed(2) }}
+              </template>
+            </el-table-column>
             <el-table-column prop="reason" label="原因" width="120" />
             <el-table-column prop="status" label="状态" width="100">
               <template #default="scope">
@@ -195,8 +220,16 @@
         <el-form-item label="剩余数量">
           {{ getRemainingQuantity() }}
         </el-form-item>
+        <el-form-item label="持仓金额">
+          {{ ((executeStepForm.holding_quantity || 0) * (executeStepForm.current_price || 0)).toFixed(2) }} 元
+        </el-form-item>
         <el-form-item label="成交价格">
-          <el-input-number v-model="executeStepForm.trade_price" :precision="2" :step="0.01" :min="0" />
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <el-input-number v-model="executeStepForm.trade_price" :precision="2" :step="0.01" :min="0" style="flex: 1;" />
+            <el-button type="primary" :loading="priceLoading" @click="fetchRealtimePrice(executeStepForm.stock_code)" title="刷新最新股价">
+              刷新
+            </el-button>
+          </div>
         </el-form-item>
         <el-form-item label="成交数量">
           <el-input-number 
@@ -220,11 +253,12 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { planApi, tradeApi } from '../api'
+import { planApi, tradeApi, stockApi } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
+const priceLoading = ref(false)
 const addStepDialogVisible = ref(false)
 const executeStepDialogVisible = ref(false)
 const activeTab = ref('steps')
@@ -240,7 +274,7 @@ const filters = ref({
 })
 
 const goBack = () => {
-  router.push('/stock-selection')
+  router.push('/trade-plan')
 }
 
 const filteredPlans = computed(() => {
@@ -501,7 +535,7 @@ const confirmAddStep = async () => {
   }
 }
 
-const showExecuteStepDialog = (row) => {
+const showExecuteStepDialog = async (row) => {
   const direction = row.trade_direction
   const planned = row.planned_quantity
   const holding = row.holding_quantity || 0
@@ -517,11 +551,13 @@ const showExecuteStepDialog = (row) => {
     defaultQuantity = holding
   }
   
+  // 默认使用目标价格或当前价格
   let defaultPrice = currentPrice
   if (direction === '止损清仓' || direction === '止盈清仓') {
     defaultPrice = row.target_price || currentPrice
   }
   
+  // 初始化表单
   executeStepForm.value = {
     step_id: row.step_id,
     plan_id: row.plan_id,
@@ -536,7 +572,32 @@ const showExecuteStepDialog = (row) => {
     trade_price: defaultPrice,
     trade_quantity: defaultQuantity
   }
+  
+  // 实时获取最新股价
+  await fetchRealtimePrice(row.stock_code)
+  
+  // 显示对话框
   executeStepDialogVisible.value = true
+}
+
+const fetchRealtimePrice = async (stockCode) => {
+  if (!stockCode) return
+  
+  priceLoading.value = true
+  try {
+    const data = await stockApi.getRealtime(stockCode)
+    const realtimePrice = data?.price || data?.close || 0
+    if (realtimePrice > 0) {
+      // 更新成交价格输入框
+      executeStepForm.value.trade_price = realtimePrice
+      ElMessage.success(`已获取最新股价：¥${realtimePrice.toFixed(2)}`)
+    }
+  } catch (error) {
+    console.warn('获取实时股价失败:', error)
+    ElMessage.warning('获取实时股价失败，使用默认价格')
+  } finally {
+    priceLoading.value = false
+  }
 }
 
 const confirmExecuteStep = async () => {

@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
-import sqlite3
+import pymysql
 from data_fetcher import DataFetcher
 
 INDUSTRY_STOCK_POOL = {
@@ -47,15 +47,15 @@ STOCK_NAME_MAPPING = {
 class StockSelector:
     """选股类"""
     
-    def __init__(self, db_path: str = 'trading_system.db'):
+    def __init__(self, db_config=None):
         """
         初始化选股器
         
         Args:
-            db_path: 数据库文件路径
+            db_config: 数据库配置字典
         """
-        self.db_path = db_path
-        self.fetcher = DataFetcher(db_path)
+        self.db_config = db_config or {}
+        self.fetcher = DataFetcher(db_config)
     
     def select_stocks(self, limit: int = 5, industry: str = None) -> List[Dict]:
         """

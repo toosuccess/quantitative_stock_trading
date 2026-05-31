@@ -253,12 +253,12 @@ onMounted(() => {
 }
 
 .profit {
-  color: #67c23a;
+  color: #f56c6c; /* 盈利红色 */
   font-weight: bold;
 }
 
 .loss {
-  color: #f56c6c;
+  color: #67c23a; /* 亏损绿色 */
   font-weight: bold;
 }
 </style>

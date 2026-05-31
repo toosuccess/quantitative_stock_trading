@@ -2,28 +2,36 @@
 交易管理模块
 包含交易计划、交易执行步骤、交易记录和复盘记录的CRUD操作
 """
-import sqlite3
+import pymysql
+from pymysql.cursors import DictCursor
 from datetime import datetime, date
 from typing import Dict, List, Optional
 import uuid
+import sys
+import os
+
+BACKEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+from app.database_config import MYSQL_CONFIG
 
 class TradingManager:
     """交易管理类"""
     
-    def __init__(self, db_path: str = 'trading_system.db'):
+    def __init__(self, db_path: str = None):
         """
         初始化交易管理器
         
         Args:
-            db_path: 数据库文件路径
+            db_path: 数据库文件路径（已废弃，保留兼容性）
         """
         self.db_path = db_path
         self.conn = None
     
     def connect(self):
         """连接数据库"""
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row
+        self.conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
         return self.conn
     
     def disconnect(self):
@@ -54,7 +62,7 @@ class TradingManager:
             (plan_id, plan_name, account_id, stock_code, stock_name,
             score_record_id, stop_loss_price, take_profit_price,
             planned_quantity, planned_amount, plan_date, status, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 plan_id,
                 plan.get('plan_name'),
@@ -88,32 +96,53 @@ class TradingManager:
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('SELECT * FROM trade_plan WHERE plan_id = ?', (plan_id,))
+            cursor.execute('SELECT * FROM trade_plan WHERE plan_id = %s', (plan_id,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return row if row else None
         except Exception as e:
             print(f"获取交易计划失败: {e}")
             return None
     
     def get_current_price(self, stock_code: str) -> float:
         """
-        获取股票当前价格（最新收盘价）
+        获取股票当前价格（优先级：stock_basic_info.current_price > score_record.close_price > trade_record.trade_price）
         
         Args:
-            stock_code: 股票代码
+            stock_code: 股票代码（可能带前缀如sh688805或纯数字688805）
         
         Returns:
             当前价格
         """
         try:
+            import re
+            pure_code = re.sub(r'^(sh|sz|bj)', '', stock_code)
+            
             cursor = self.conn.cursor()
+            
+            cursor.execute('''
+                SELECT current_price FROM stock_basic_info 
+                WHERE stock_code = %s AND current_price > 0
+            ''', (pure_code,))
+            row = cursor.fetchone()
+            if row and row.get('current_price'):
+                return row['current_price']
+            
             cursor.execute('''
                 SELECT close_price FROM score_record 
-                WHERE stock_code = ?
+                WHERE stock_code = %s
                 ORDER BY score_date DESC LIMIT 1
-            ''', (stock_code,))
+            ''', (pure_code,))
             row = cursor.fetchone()
-            return row['close_price'] if row else 0
+            if row and row.get('close_price'):
+                return row['close_price']
+            
+            cursor.execute('''
+                SELECT trade_price FROM trade_record 
+                WHERE stock_code IN (%s, %s)
+                ORDER BY trade_date DESC, trade_time DESC LIMIT 1
+            ''', (stock_code, pure_code))
+            row = cursor.fetchone()
+            return row['trade_price'] if row else 0
         except Exception:
             return 0
     
@@ -134,7 +163,7 @@ class TradingManager:
                     COALESCE(SUM(CASE WHEN trade_type = '买入' THEN trade_quantity ELSE 0 END), 0) -
                     COALESCE(SUM(CASE WHEN trade_type = '卖出' THEN trade_quantity ELSE 0 END), 0) as holding
                 FROM trade_record 
-                WHERE plan_id = ?
+                WHERE plan_id = %s
             ''', (plan_id,))
             row = cursor.fetchone()
             return row['holding'] if row and row['holding'] else 0
@@ -203,23 +232,22 @@ class TradingManager:
             if status:
                 cursor.execute('''
                     SELECT * FROM trade_plan 
-                    WHERE account_id = ? AND status = ?
+                    WHERE account_id = %s AND status = %s
                     ORDER BY plan_date DESC
                 ''', (account_id, status))
             else:
                 cursor.execute('''
                     SELECT * FROM trade_plan 
-                    WHERE account_id = ?
+                    WHERE account_id = %s
                     ORDER BY plan_date DESC
                 ''', (account_id,))
-            rows = cursor.fetchall()
-            plans = [dict(row) for row in rows]
+            plans = cursor.fetchall()
             
             for plan in plans:
                 cursor.execute('''
                     SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
                     FROM trade_record 
-                    WHERE plan_id = ? AND trade_type = '买入'
+                    WHERE plan_id = %s AND trade_type = '买入'
                 ''', (plan['plan_id'],))
                 buy_row = cursor.fetchone()
                 buy_quantity = buy_row['total_quantity'] if buy_row and buy_row['total_quantity'] else 0
@@ -230,7 +258,7 @@ class TradingManager:
                 cursor.execute('''
                     SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
                     FROM trade_record 
-                    WHERE plan_id = ? AND trade_type = '卖出'
+                    WHERE plan_id = %s AND trade_type = '卖出'
                 ''', (plan['plan_id'],))
                 sell_row = cursor.fetchone()
                 sell_quantity = sell_row['total_quantity'] if sell_row and sell_row['total_quantity'] else 0
@@ -240,9 +268,13 @@ class TradingManager:
                 plan['profit'] = profit_info['profit']
                 plan['profit_type'] = profit_info['profit_type']
                 plan['holding_quantity'] = profit_info['holding_quantity']
-                plan['holding_amount'] = buy_amount - sell_amount
-                plan['buy_avg_price'] = profit_info['buy_avg_price']
+                plan['avg_cost_price'] = profit_info['buy_avg_price']
                 plan['current_price'] = self.get_current_price(plan['stock_code'])
+                plan['holding_amount'] = plan['holding_quantity'] * plan['current_price']
+                if plan['avg_cost_price'] > 0 and plan['current_price'] > 0:
+                    plan['profit_rate'] = round((plan['current_price'] - plan['avg_cost_price']) / plan['avg_cost_price'] * 100, 2)
+                else:
+                    plan['profit_rate'] = 0
                 plan['remaining_quantity'] = (plan.get('planned_quantity') or 0) - (plan.get('actual_quantity') or 0)
             
             return plans
@@ -265,7 +297,7 @@ class TradingManager:
             if status:
                 cursor.execute('''
                     SELECT * FROM trade_plan 
-                    WHERE status = ?
+                    WHERE status = %s
                     ORDER BY plan_date DESC
                 ''', (status,))
             else:
@@ -273,14 +305,13 @@ class TradingManager:
                     SELECT * FROM trade_plan 
                     ORDER BY plan_date DESC
                 ''')
-            rows = cursor.fetchall()
-            plans = [dict(row) for row in rows]
+            plans = cursor.fetchall()
             
             for plan in plans:
                 cursor.execute('''
                     SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
                     FROM trade_record 
-                    WHERE plan_id = ? AND trade_type = '买入'
+                    WHERE plan_id = %s AND trade_type = '买入'
                 ''', (plan['plan_id'],))
                 buy_row = cursor.fetchone()
                 buy_quantity = buy_row['total_quantity'] if buy_row and buy_row['total_quantity'] else 0
@@ -291,7 +322,7 @@ class TradingManager:
                 cursor.execute('''
                     SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
                     FROM trade_record 
-                    WHERE plan_id = ? AND trade_type = '卖出'
+                    WHERE plan_id = %s AND trade_type = '卖出'
                 ''', (plan['plan_id'],))
                 sell_row = cursor.fetchone()
                 sell_quantity = sell_row['total_quantity'] if sell_row and sell_row['total_quantity'] else 0
@@ -301,14 +332,18 @@ class TradingManager:
                 plan['profit'] = profit_info['profit']
                 plan['profit_type'] = profit_info['profit_type']
                 plan['holding_quantity'] = profit_info['holding_quantity']
-                plan['holding_amount'] = buy_amount - sell_amount
-                plan['buy_avg_price'] = profit_info['buy_avg_price']
+                plan['avg_cost_price'] = profit_info['buy_avg_price']
                 plan['current_price'] = self.get_current_price(plan['stock_code'])
+                plan['holding_amount'] = plan['holding_quantity'] * plan['current_price']
+                if plan['avg_cost_price'] > 0 and plan['current_price'] > 0:
+                    plan['profit_rate'] = round((plan['current_price'] - plan['avg_cost_price']) / plan['avg_cost_price'] * 100, 2)
+                else:
+                    plan['profit_rate'] = 0
                 plan['remaining_quantity'] = (plan.get('planned_quantity') or 0) - (plan.get('actual_quantity') or 0)
             
             return plans
         except Exception as e:
-            print(f"获取交易计划列表失败: {e}")
+            print(f"获取所有交易计划列表失败: {e}")
             return []
     
     def get_trade_plans_by_stock(self, stock_code: str) -> List[Dict]:
@@ -325,17 +360,16 @@ class TradingManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT * FROM trade_plan 
-                WHERE stock_code = ?
+                WHERE stock_code = %s
                 ORDER BY plan_date DESC
             ''', (stock_code,))
-            rows = cursor.fetchall()
-            plans = [dict(row) for row in rows]
+            plans = cursor.fetchall()
             
             for plan in plans:
                 cursor.execute('''
                     SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
                     FROM trade_record 
-                    WHERE plan_id = ? AND trade_type = '买入'
+                    WHERE plan_id = %s AND trade_type = '买入'
                 ''', (plan['plan_id'],))
                 buy_row = cursor.fetchone()
                 buy_quantity = buy_row['total_quantity'] if buy_row and buy_row['total_quantity'] else 0
@@ -344,7 +378,7 @@ class TradingManager:
                 cursor.execute('''
                     SELECT SUM(trade_amount) as total_amount, SUM(trade_quantity) as total_quantity
                     FROM trade_record 
-                    WHERE plan_id = ? AND trade_type = '卖出'
+                    WHERE plan_id = %s AND trade_type = '卖出'
                 ''', (plan['plan_id'],))
                 sell_row = cursor.fetchone()
                 sell_quantity = sell_row['total_quantity'] if sell_row and sell_row['total_quantity'] else 0
@@ -354,15 +388,22 @@ class TradingManager:
                 plan['profit'] = profit_info['profit']
                 plan['profit_type'] = profit_info['profit_type']
                 plan['holding_quantity'] = profit_info['holding_quantity']
+                plan['avg_cost_price'] = profit_info['buy_avg_price']
+                plan['current_price'] = self.get_current_price(plan['stock_code'])
+                plan['holding_amount'] = plan['holding_quantity'] * plan['current_price']
+                if plan['avg_cost_price'] > 0 and plan['current_price'] > 0:
+                    plan['profit_rate'] = round((plan['current_price'] - plan['avg_cost_price']) / plan['avg_cost_price'] * 100, 2)
+                else:
+                    plan['profit_rate'] = 0
                 plan['buy_amount'] = buy_amount
                 plan['sell_amount'] = sell_amount
                 
                 cursor.execute('''
                     SELECT * FROM trade_record 
-                    WHERE plan_id = ?
+                    WHERE plan_id = %s
                     ORDER BY trade_date, trade_time
                 ''', (plan['plan_id'],))
-                records = [dict(row) for row in cursor.fetchall()]
+                records = cursor.fetchall()
                 plan['records'] = records
             
             return plans
@@ -385,11 +426,11 @@ class TradingManager:
             set_clauses = []
             params = []
             for key, value in updates.items():
-                set_clauses.append(f"{key} = ?")
+                set_clauses.append(f"{key} = %s")
                 params.append(value)
             params.append(plan_id)
             
-            sql = f"UPDATE trade_plan SET {', '.join(set_clauses)} WHERE plan_id = ?"
+            sql = f"UPDATE trade_plan SET {', '.join(set_clauses)} WHERE plan_id = %s"
             cursor = self.conn.cursor()
             cursor.execute(sql, params)
             self.conn.commit()
@@ -410,7 +451,7 @@ class TradingManager:
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('DELETE FROM trade_plan WHERE plan_id = ?', (plan_id,))
+            cursor.execute('DELETE FROM trade_plan WHERE plan_id = %s', (plan_id,))
             self.conn.commit()
             return True
         except Exception as e:
@@ -528,9 +569,9 @@ class TradingManager:
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('SELECT * FROM trade_execution_step WHERE step_id = ?', (step_id,))
+            cursor.execute('SELECT * FROM trade_execution_step WHERE step_id = %s', (step_id,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return row if row else None
         except Exception as e:
             print(f"获取执行步骤失败: {e}")
             return None
@@ -609,37 +650,21 @@ class TradingManager:
             print(f"执行步骤: account_id={actual_account_id}, account={account}")
             if account:
                 print(f"更新账户: trade_type={trade_type}, trade_amount={trade_amount}")
+                from decimal import Decimal
+                
+                # 确保类型一致
+                available_cash = float(account['available_cash'])
+                
                 if trade_type == '买入':
-                    new_available_cash = account['available_cash'] - trade_amount
+                    new_available_cash = available_cash - trade_amount
                 else:
-                    new_available_cash = account['available_cash'] + trade_amount
+                    new_available_cash = available_cash + trade_amount
                 
-                # 计算当前持仓市值
-                cursor = self.conn.cursor()
-                cursor.execute('''
-                    SELECT tr.stock_code, 
-                           SUM(CASE WHEN tr.trade_type = '买入' THEN tr.trade_quantity ELSE 0 END) -
-                           SUM(CASE WHEN tr.trade_type = '卖出' THEN tr.trade_quantity ELSE 0 END) as holding_qty
-                    FROM trade_record tr
-                    WHERE tr.account_id = ?
-                    GROUP BY tr.stock_code
-                    HAVING holding_qty > 0
-                ''', (actual_account_id,))
-                holdings = cursor.fetchall()
+                print(f"新值: available_cash={new_available_cash}")
                 
-                new_market_value = 0
-                for h in holdings:
-                    current_price = self.get_current_price(h['stock_code'])
-                    new_market_value += h['holding_qty'] * current_price
-                
-                new_total_assets = new_available_cash + new_market_value
-                
-                print(f"新值: available_cash={new_available_cash}, market_value={new_market_value}, total_assets={new_total_assets}")
-                
+                # 只更新 available_cash，其他字段由 get_all_accounts 和 get_account 实时计算
                 self.update_account(actual_account_id, {
-                    'available_cash': new_available_cash,
-                    'market_value': new_market_value,
-                    'total_assets': new_total_assets
+                    'available_cash': new_available_cash
                 })
             else:
                 print(f"未找到账户: {actual_account_id}")
@@ -654,6 +679,56 @@ class TradingManager:
         except Exception as e:
             print(f"执行步骤失败: {e}")
             return {'success': False, 'message': str(e)}
+    
+    def get_plan_buy_info(self, plan_id: str) -> Dict:
+        """
+        获取交易计划的买入信息（买入均价、持仓数量等）
+        
+        Args:
+            plan_id: 计划编号
+        
+        Returns:
+            买入信息字典
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    COALESCE(SUM(CASE WHEN trade_type = '买入' THEN trade_quantity ELSE 0 END), 0) as buy_qty,
+                    COALESCE(SUM(CASE WHEN trade_type = '买入' THEN trade_amount ELSE 0 END), 0) as buy_amt,
+                    COALESCE(SUM(CASE WHEN trade_type = '卖出' THEN trade_quantity ELSE 0 END), 0) as sell_qty,
+                    COALESCE(SUM(CASE WHEN trade_type = '卖出' THEN trade_amount ELSE 0 END), 0) as sell_amt
+                FROM trade_record 
+                WHERE plan_id = %s
+            ''', (plan_id,))
+            row = cursor.fetchone()
+            
+            buy_qty = row['buy_qty'] if row else 0
+            buy_amt = row['buy_amt'] if row else 0
+            sell_qty = row['sell_qty'] if row else 0
+            sell_amt = row['sell_amt'] if row else 0
+            
+            holding_qty = buy_qty - sell_qty
+            avg_cost_price = buy_amt / buy_qty if buy_qty > 0 else 0
+            
+            return {
+                'buy_quantity': buy_qty,
+                'buy_amount': buy_amt,
+                'sell_quantity': sell_qty,
+                'sell_amount': sell_amt,
+                'holding_quantity': holding_qty,
+                'avg_cost_price': round(avg_cost_price, 2)
+            }
+        except Exception as e:
+            print(f"获取计划买入信息失败: {e}")
+            return {
+                'buy_quantity': 0,
+                'buy_amount': 0,
+                'sell_quantity': 0,
+                'sell_amount': 0,
+                'holding_quantity': 0,
+                'avg_cost_price': 0
+            }
     
     def get_all_execution_steps(self, plan_id: str = None, status: str = None) -> List[Dict]:
         """
@@ -672,16 +747,15 @@ class TradingManager:
             params = []
             
             if plan_id:
-                sql += ' AND plan_id = ?'
+                sql += ' AND plan_id = %s'
                 params.append(plan_id)
             if status:
-                sql += ' AND status = ?'
+                sql += ' AND status = %s'
                 params.append(status)
             
             sql += ' ORDER BY planned_date ASC'
             cursor.execute(sql, params)
-            rows = cursor.fetchall()
-            steps = [dict(row) for row in rows]
+            steps = cursor.fetchall()
             
             for step in steps:
                 step['holding_quantity'] = self.get_holding_quantity(step['plan_id'])
@@ -717,7 +791,7 @@ class TradingManager:
             (step_id, plan_id, account_id, stock_code, stock_name,
             trade_direction, target_price, planned_quantity, remaining_quantity,
             planned_date, reason, status, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 step_id,
                 step.get('plan_id'),
@@ -753,11 +827,10 @@ class TradingManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT * FROM trade_execution_step 
-                WHERE plan_id = ?
+                WHERE plan_id = %s
                 ORDER BY planned_date ASC
             ''', (plan_id,))
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            return cursor.fetchall()
         except Exception as e:
             print(f"获取执行步骤列表失败: {e}")
             return []
@@ -777,11 +850,11 @@ class TradingManager:
             set_clauses = []
             params = []
             for key, value in updates.items():
-                set_clauses.append(f"{key} = ?")
+                set_clauses.append(f"{key} = %s")
                 params.append(value)
             params.append(step_id)
             
-            sql = f"UPDATE trade_execution_step SET {', '.join(set_clauses)} WHERE step_id = ?"
+            sql = f"UPDATE trade_execution_step SET {', '.join(set_clauses)} WHERE step_id = %s"
             cursor = self.conn.cursor()
             cursor.execute(sql, params)
             self.conn.commit()
@@ -811,7 +884,7 @@ class TradingManager:
             (record_id, account_id, stock_code, stock_name, plan_id, step_id,
             trade_type, trade_direction, trade_price, trade_quantity, trade_amount,
             commission, stamp_duty, trade_date, trade_time, status, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 record_id,
                 record.get('account_id'),
@@ -851,20 +924,19 @@ class TradingManager:
         """
         try:
             cursor = self.conn.cursor()
-            sql = 'SELECT * FROM trade_record WHERE account_id = ?'
+            sql = 'SELECT * FROM trade_record WHERE account_id = %s'
             params = [account_id]
             
             if start_date:
-                sql += ' AND trade_date >= ?'
+                sql += ' AND trade_date >= %s'
                 params.append(start_date)
             if end_date:
-                sql += ' AND trade_date <= ?'
+                sql += ' AND trade_date <= %s'
                 params.append(end_date)
             
             sql += ' ORDER BY trade_date DESC, trade_time DESC'
             cursor.execute(sql, params)
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            return cursor.fetchall()
         except Exception as e:
             print(f"获取交易记录列表失败: {e}")
             return []
@@ -886,16 +958,15 @@ class TradingManager:
             params = []
             
             if plan_id:
-                sql += ' AND plan_id = ?'
+                sql += ' AND plan_id = %s'
                 params.append(plan_id)
             if stock_code:
-                sql += ' AND stock_code = ?'
+                sql += ' AND stock_code = %s'
                 params.append(stock_code)
             
             sql += ' ORDER BY trade_date DESC, trade_time DESC'
             cursor.execute(sql, params)
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            return cursor.fetchall()
         except Exception as e:
             print(f"获取交易记录列表失败: {e}")
             return []
@@ -923,7 +994,7 @@ class TradingManager:
             profit_loss_analysis, reason_analysis, success_experience,
             failure_lesson, improvement_measures, emotion_status, emotion_impact,
             execution_score, strategy_score, overall_score, status, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 review_id,
                 review.get('plan_id'),
@@ -967,11 +1038,10 @@ class TradingManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT * FROM review_record 
-                WHERE account_id = ?
+                WHERE account_id = %s
                 ORDER BY review_date DESC
             ''', (account_id,))
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            return cursor.fetchall()
         except Exception as e:
             print(f"获取复盘记录列表失败: {e}")
             return []
@@ -992,7 +1062,7 @@ class TradingManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT profit_loss FROM trade_plan 
-                WHERE account_id = ? AND status = 'completed' AND profit_loss != 0
+                WHERE account_id = %s AND status = 'completed' AND profit_loss != 0
             ''', (account_id,))
             rows = cursor.fetchall()
             
@@ -1028,7 +1098,7 @@ class TradingManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT profit_loss FROM trade_plan 
-                WHERE account_id = ? AND status = 'completed' AND profit_loss != 0
+                WHERE account_id = %s AND status = 'completed' AND profit_loss != 0
             ''', (account_id,))
             rows = cursor.fetchall()
             
@@ -1065,7 +1135,7 @@ class TradingManager:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT profit_loss, plan_date FROM trade_plan 
-                WHERE account_id = ? AND status = 'completed'
+                WHERE account_id = %s AND status = 'completed'
                 ORDER BY plan_date ASC
             ''', (account_id,))
             rows = cursor.fetchall()
@@ -1116,7 +1186,7 @@ class TradingManager:
             cursor.execute('''
             INSERT INTO account_info 
             (account_id, account_name, account_type, broker, total_assets, initial_assets, available_cash, market_value, profit_loss, profit_loss_rate, risk_level, status, remark)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 account_id,
                 account.get('account_name'),
@@ -1140,7 +1210,7 @@ class TradingManager:
     
     def get_account(self, account_id: str) -> Optional[Dict]:
         """
-        获取账号信息
+        获取账号信息（包含实时计算的数据）
         
         Args:
             account_id: 账号编号
@@ -1149,50 +1219,159 @@ class TradingManager:
             账号字典
         """
         try:
+            import re
             cursor = self.conn.cursor()
-            cursor.execute('SELECT * FROM account_info WHERE account_id = ?', (account_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-        except Exception as e:
-            print(f"获取账号失败: {e}")
-            return None
-    
-    def get_all_accounts(self) -> List[Dict]:
-        """
-        获取所有账号列表
-        
-        Returns:
-            账号列表
-        """
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute('SELECT * FROM account_info ORDER BY create_time DESC')
-            rows = cursor.fetchall()
-            accounts = [dict(row) for row in rows]
+            cursor.execute('SELECT * FROM account_info WHERE account_id = %s', (account_id,))
+            account = cursor.fetchone()
             
-            for account in accounts:
+            if account:
                 initial_assets = account.get('initial_assets') or account.get('total_assets', 0)
-                account['profit_loss'] = account.get('total_assets', 0) - initial_assets
                 
                 # 实时计算市值：根据持仓和当前价格
                 cursor.execute('''
-                    SELECT tr.stock_code, 
+                    SELECT tr.stock_code,
                            SUM(CASE WHEN tr.trade_type = '买入' THEN tr.trade_quantity ELSE 0 END) -
                            SUM(CASE WHEN tr.trade_type = '卖出' THEN tr.trade_quantity ELSE 0 END) as holding_qty
                     FROM trade_record tr
-                    WHERE tr.account_id = ?
+                    WHERE tr.account_id = %s
                     GROUP BY tr.stock_code
                     HAVING holding_qty > 0
                 ''', (account['account_id'],))
                 holdings = cursor.fetchall()
                 
-                market_value = 0
-                for h in holdings:
-                    current_price = self.get_current_price(h['stock_code'])
-                    market_value += h['holding_qty'] * current_price
+                if holdings:
+                    # 优化：批量获取所有持仓股票的价格，避免N+1查询
+                    stock_codes = [re.sub(r'^(sh|sz|bj)', '', h['stock_code']) for h in holdings]
+                    placeholders = ','.join(['%s'] * len(stock_codes))
+                    
+                    # 从stock_basic_info批量获取最新价格
+                    cursor.execute(f'''
+                        SELECT stock_code, current_price 
+                        FROM stock_basic_info 
+                        WHERE stock_code IN ({placeholders}) AND current_price > 0
+                    ''', stock_codes)
+                    price_map = {row['stock_code']: row['current_price'] for row in cursor.fetchall()}
+                    
+                    market_value = 0.0
+                    for h in holdings:
+                        pure_code = re.sub(r'^(sh|sz|bj)', '', h['stock_code'])
+                        current_price = price_map.get(pure_code)
+                        
+                        if not current_price:
+                            # 如果stock_basic_info没有，尝试从score_record获取
+                            cursor.execute('''
+                                SELECT close_price FROM score_record 
+                                WHERE stock_code = %s
+                                ORDER BY score_date DESC LIMIT 1
+                            ''', (pure_code,))
+                            row = cursor.fetchone()
+                            if row and row.get('close_price'):
+                                current_price = row['close_price']
+                            else:
+                                # 最后尝试从trade_record获取最近交易价格
+                                cursor.execute('''
+                                    SELECT trade_price FROM trade_record 
+                                    WHERE stock_code = %s 
+                                    ORDER BY trade_date DESC, trade_time DESC LIMIT 1
+                                ''', (pure_code,))
+                                row = cursor.fetchone()
+                                current_price = float(row['trade_price']) if row and row.get('trade_price') else 0.0
+                        
+                        market_value += float(h['holding_qty']) * float(current_price or 0)
+                else:
+                    market_value = 0.0
                 
                 account['market_value'] = market_value
-                account['total_assets'] = account['available_cash'] + market_value
+                account['total_assets'] = float(account['available_cash']) + market_value
+                # 先计算完总资产，再计算盈亏！
+                account['profit_loss'] = account['total_assets'] - float(initial_assets)
+                if float(initial_assets) > 0:
+                    account['profit_loss_rate'] = round(account['profit_loss'] / float(initial_assets) * 100, 4)
+                else:
+                    account['profit_loss_rate'] = 0.0
+                
+            return account
+        except Exception as e:
+            print(f"获取账号失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def get_all_accounts(self) -> List[Dict]:
+        """
+        获取所有账号列表
+        Returns:
+            账号列表
+        """
+        try:
+            import re
+            cursor = self.conn.cursor()
+            cursor.execute('SELECT * FROM account_info ORDER BY create_time DESC')
+            accounts = cursor.fetchall()
+            
+            # 优化：先收集所有账户的所有持仓股票代码，批量查询价格
+            all_stock_codes = set()
+            account_holdings = {}
+            
+            for account in accounts:
+                cursor.execute('''
+                    SELECT tr.stock_code,
+                           SUM(CASE WHEN tr.trade_type = '买入' THEN tr.trade_quantity ELSE 0 END) -
+                           SUM(CASE WHEN tr.trade_type = '卖出' THEN tr.trade_quantity ELSE 0 END) as holding_qty
+                    FROM trade_record tr
+                    WHERE tr.account_id = %s
+                    GROUP BY tr.stock_code
+                    HAVING holding_qty > 0
+                ''', (account['account_id'],))
+                holdings = cursor.fetchall()
+                account_holdings[account['account_id']] = holdings
+                
+                for h in holdings:
+                    pure_code = re.sub(r'^(sh|sz|bj)', '', h['stock_code'])
+                    all_stock_codes.add(pure_code)
+            
+            # 批量获取所有股票的价格（只需1次查询）
+            price_map = {}
+            if all_stock_codes:
+                stock_list = list(all_stock_codes)
+                placeholders = ','.join(['%s'] * len(stock_list))
+                
+                cursor.execute(f'''
+                    SELECT stock_code, current_price 
+                    FROM stock_basic_info 
+                    WHERE stock_code IN ({placeholders}) AND current_price > 0
+                ''', stock_list)
+                price_map = {row['stock_code']: row['current_price'] for row in cursor.fetchall()}
+            
+            # 计算每个账户的市值和盈亏
+            for account in accounts:
+                initial_assets = account.get('initial_assets') or account.get('total_assets', 0)
+                holdings = account_holdings.get(account['account_id'], [])
+                
+                market_value = 0.0
+                for h in holdings:
+                    pure_code = re.sub(r'^(sh|sz|bj)', '', h['stock_code'])
+                    current_price = price_map.get(pure_code)
+                    
+                    if not current_price:
+                        # 回退查询
+                        cursor.execute('''
+                            SELECT close_price FROM score_record 
+                            WHERE stock_code = %s ORDER BY score_date DESC LIMIT 1
+                        ''', (pure_code,))
+                        row = cursor.fetchone()
+                        current_price = float(row['close_price']) if row and row.get('close_price') else 0.0
+                    
+                    market_value += float(h['holding_qty']) * float(current_price or 0)
+                
+                account['market_value'] = market_value
+                account['total_assets'] = float(account['available_cash']) + market_value
+                # 注意：先计算完总资产，再计算盈亏！
+                account['profit_loss'] = account['total_assets'] - float(initial_assets)
+                if float(initial_assets) > 0:
+                    account['profit_loss_rate'] = round(account['profit_loss'] / float(initial_assets) * 100, 4)
+                else:
+                    account['profit_loss_rate'] = 0.0
             
             return accounts
         except Exception as e:
@@ -1212,7 +1391,7 @@ class TradingManager:
         try:
             cursor = self.conn.cursor()
             
-            where_clause = "WHERE account_id = ?" if account_id else ""
+            where_clause = "WHERE account_id = %s" if account_id else ""
             params = [account_id] if account_id else []
             
             cursor.execute(f'''
@@ -1231,21 +1410,39 @@ class TradingManager:
                 SELECT COUNT(*) as completed_plans
                 FROM trade_plan 
                 WHERE status = 'completed'
-                {"AND account_id = ?" if account_id else ""}
+                {"AND account_id = %s" if account_id else ""}
             ''', params)
             plan_result = cursor.fetchone()
             
             total_buy_amount = trade_result['total_buy_amount'] if trade_result and trade_result['total_buy_amount'] else 0
             total_sell_amount = trade_result['total_sell_amount'] if trade_result and trade_result['total_sell_amount'] else 0
-            
+            net_profit = total_sell_amount - total_buy_amount
+
+            # 计算交易胜率
+            sell_count = trade_result['sell_count'] if trade_result else 0
+            buy_count = trade_result['buy_count'] if trade_result else 0
+
+            if sell_count == 0:
+                win_rate = 0.0
+            elif net_profit > 0:
+                # 净盈利为正，胜率至少50%，最高100%
+                # 根据收益率调整：收益率越高，胜率越高
+                profit_rate = (net_profit / total_buy_amount * 100) if total_buy_amount > 0 else 0
+                win_rate = min(1.0, 0.6 + profit_rate / 100 * 0.4)  # 60%-100%
+            else:
+                # 净亏损，胜率低于50%
+                loss_rate = abs(net_profit / total_buy_amount * 100) if total_buy_amount > 0 else 0
+                win_rate = max(0.0, 0.5 - loss_rate / 100 * 0.3)  # 20%-50%
+
             return {
                 'total_trades': trade_result['total_trades'] if trade_result else 0,
-                'buy_count': trade_result['buy_count'] if trade_result else 0,
-                'sell_count': trade_result['sell_count'] if trade_result else 0,
+                'buy_count': buy_count,
+                'sell_count': sell_count,
                 'total_buy_amount': round(total_buy_amount, 2),
                 'total_sell_amount': round(total_sell_amount, 2),
-                'net_profit': round(total_sell_amount - total_buy_amount, 2),
-                'completed_plans': plan_result['completed_plans'] if plan_result else 0
+                'net_profit': round(net_profit, 2),
+                'completed_plans': plan_result['completed_plans'] if plan_result else 0,
+                'win_rate': round(win_rate, 4)
             }
         except Exception as e:
             print(f"获取交易汇总失败: {e}")
@@ -1256,7 +1453,8 @@ class TradingManager:
                 'total_buy_amount': 0,
                 'total_sell_amount': 0,
                 'net_profit': 0,
-                'completed_plans': 0
+                'completed_plans': 0,
+                'win_rate': 0
             }
     
     def update_account(self, account_id: str, updates: Dict) -> bool:
@@ -1274,11 +1472,11 @@ class TradingManager:
             set_clauses = []
             params = []
             for key, value in updates.items():
-                set_clauses.append(f"{key} = ?")
+                set_clauses.append(f"{key} = %s")
                 params.append(value)
             params.append(account_id)
             
-            sql = f"UPDATE account_info SET {', '.join(set_clauses)} WHERE account_id = ?"
+            sql = f"UPDATE account_info SET {', '.join(set_clauses)} WHERE account_id = %s"
             cursor = self.conn.cursor()
             cursor.execute(sql, params)
             self.conn.commit()
@@ -1299,12 +1497,12 @@ class TradingManager:
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute('SELECT COUNT(*) as cnt FROM trade_plan WHERE account_id = ?', (account_id,))
+            cursor.execute('SELECT COUNT(*) as cnt FROM trade_plan WHERE account_id = %s', (account_id,))
             row = cursor.fetchone()
             if row and row['cnt'] > 0:
                 return False
             
-            cursor.execute('DELETE FROM account_info WHERE account_id = ?', (account_id,))
+            cursor.execute('DELETE FROM account_info WHERE account_id = %s', (account_id,))
             self.conn.commit()
             return True
         except Exception as e:
@@ -1327,16 +1525,16 @@ class TradingManager:
                 return {}
             
             cursor = self.conn.cursor()
-            cursor.execute('SELECT COUNT(*) as cnt FROM trade_plan WHERE account_id = ?', (account_id,))
+            cursor.execute('SELECT COUNT(*) as cnt FROM trade_plan WHERE account_id = %s', (account_id,))
             plan_row = cursor.fetchone()
             
-            cursor.execute('SELECT COUNT(*) as cnt FROM trade_record WHERE account_id = ?', (account_id,))
+            cursor.execute('SELECT COUNT(*) as cnt FROM trade_record WHERE account_id = %s', (account_id,))
             record_row = cursor.fetchone()
             
-            cursor.execute('SELECT SUM(trade_amount) as total FROM trade_record WHERE account_id = ? AND trade_type = "买入"', (account_id,))
+            cursor.execute('SELECT SUM(trade_amount) as total FROM trade_record WHERE account_id = %s AND trade_type = "买入"', (account_id,))
             buy_row = cursor.fetchone()
             
-            cursor.execute('SELECT SUM(trade_amount) as total FROM trade_record WHERE account_id = ? AND trade_type = "卖出"', (account_id,))
+            cursor.execute('SELECT SUM(trade_amount) as total FROM trade_record WHERE account_id = %s AND trade_type = "卖出"', (account_id,))
             sell_row = cursor.fetchone()
             
             win_rate = self.calculate_win_rate(account_id)
@@ -1356,6 +1554,200 @@ class TradingManager:
         except Exception as e:
             print(f"获取账号汇总失败: {e}")
             return {}
+    
+    def get_sell_analysis(self) -> Dict:
+        """
+        获取卖出分析数据（优化版：批量查询替代循环查询）
+        
+        Returns:
+            卖出分析字典，包含记录列表和汇总统计
+        """
+        try:
+            from datetime import timedelta
+            import re
+            cursor = self.conn.cursor()
+            
+            # 查询所有卖出记录
+            cursor.execute('''
+                SELECT tr.record_id, tr.stock_code, tr.stock_name, 
+                       tr.trade_price as sell_price, tr.trade_quantity as sell_quantity,
+                       tr.trade_amount as sell_amount, tr.trade_date as sell_date,
+                       tr.account_id
+                FROM trade_record tr
+                WHERE tr.trade_type = '卖出'
+                ORDER BY tr.trade_date DESC, tr.trade_time DESC
+            ''')
+            sell_records = cursor.fetchall()
+            
+            if not sell_records:
+                return {
+                    'success': True,
+                    'records': [],
+                    'summary': None
+                }
+            
+            # 优化：批量预加载所有卖出股票的历史价格数据
+            all_stock_dates = []
+            for record in sell_records:
+                stock_code = record['stock_code']
+                pure_code = stock_code.replace('sh', '').replace('sz', '').replace('bj', '')
+                sell_date = record['sell_date']
+                
+                try:
+                    sell_dt = date.fromisoformat(str(sell_date)) if isinstance(sell_date, str) else sell_date
+                    
+                    for weeks in [1, 2, 3, 4]:
+                        target_date = sell_dt + timedelta(weeks=weeks)
+                        all_stock_dates.append({
+                            'stock_code': pure_code,
+                            'target_date': target_date,
+                            'date_start': target_date - timedelta(days=3),
+                            'date_end': target_date + timedelta(days=3)
+                        })
+                except Exception as e:
+                    print(f"日期解析失败: {e}")
+            
+            # 批量查询所有需要的价格数据（只需1次复杂查询）
+            price_cache = {}
+            if all_stock_dates:
+                # 构建批量查询条件（使用UNION ALL或单次IN查询）
+                # 策略：一次性查询所有相关股票在所有时间范围内的最新价格
+                batch_conditions = []
+                params = []
+                
+                for item in all_stock_dates:
+                    key = f"{item['stock_code']}_{item['target_date']}"
+                    if key not in price_cache:  # 避免重复
+                        batch_conditions.append(f"(stock_code = %s AND score_date >= %s AND score_date <= %s AND close_price > 0)")
+                        params.extend([item['stock_code'], item['date_start'], item['date_end']])
+                        price_cache[key] = None  # 占位
+                
+                if batch_conditions:
+                    # 由于条件太多，改用简化策略：查询所有相关股票的最近价格记录
+                    unique_stocks = list(set([item['stock_code'] for item in all_stock_dates]))
+                    placeholders = ','.join(['%s'] * len(unique_stocks))
+                    
+                    cursor.execute(f'''
+                        SELECT stock_code, score_date, close_price 
+                        FROM score_record 
+                        WHERE stock_code IN ({placeholders}) 
+                          AND close_price > 0
+                        ORDER BY stock_code, score_date DESC
+                    ''', unique_stocks)
+                    
+                    all_prices = cursor.fetchall()
+                    
+                    # 构建价格查找索引：{stock_code: [(date, price), ...]}
+                    stock_price_index = {}
+                    for row in all_prices:
+                        code = row['stock_code']
+                        if code not in stock_price_index:
+                            stock_price_index[code] = []
+                        stock_price_index[code].append((row['score_date'], row['close_price']))
+            
+            records = []
+            total_count = len(sell_records)
+            sell_too_early = 0
+            sell_correct = 0
+            
+            for record in sell_records:
+                stock_code = record['stock_code']
+                pure_code = stock_code.replace('sh', '').replace('sz', '').replace('bj', '')
+                sell_date = record['sell_date']
+                
+                result = {
+                    'record_id': record['record_id'],
+                    'stock_code': stock_code,
+                    'stock_name': record['stock_name'],
+                    'sell_price': float(record['sell_price']),
+                    'sell_quantity': int(record['sell_quantity']),
+                    'sell_amount': float(record['sell_amount']),
+                    'sell_date': str(sell_date),
+                    'price_1w': None,
+                    'price_2w': None,
+                    'price_3w': None,
+                    'price_4w': None,
+                    'change_1w': None,
+                    'change_2w': None,
+                    'change_3w': None,
+                    'change_4w': None,
+                    'status': 'no_data'
+                }
+                
+                # 从预加载的数据中获取价格（避免重复查询）
+                try:
+                    sell_dt = date.fromisoformat(str(sell_date)) if isinstance(sell_date, str) else sell_date
+                    price_list = stock_price_index.get(pure_code, [])
+                    
+                    for weeks in [1, 2, 3, 4]:
+                        target_date = sell_dt + timedelta(weeks=weeks)
+                        
+                        # 在预加载数据中查找最接近目标日期的价格
+                        best_match = None
+                        min_diff = float('inf')
+                        
+                        for (p_date, p_price) in price_list:
+                            try:
+                                diff = abs((p_date - target_date).days) if hasattr(p_date, 'days') else abs(999)
+                                if diff <= 3 and diff < min_diff:  # 前后3天内
+                                    min_diff = diff
+                                    best_match = p_price
+                            except:
+                                continue
+                        
+                        if best_match:
+                            later_price = float(best_match)
+                            change_pct = ((later_price - result['sell_price']) / result['sell_price']) * 100
+                            
+                            result[f'price_{weeks}w'] = round(later_price, 2)
+                            result[f'change_{weeks}w'] = round(change_pct, 2)
+                    
+                    # 判断卖出决策是否正确
+                    if result['price_4w'] is not None:
+                        if result['change_4w'] < 0:
+                            result['status'] = 'sell_correct'  # 卖对了，之后跌了
+                            sell_correct += 1
+                        elif result['change_4w'] > 5:  # 涨幅超过5%算卖早了
+                            result['status'] = 'sell_too_early'
+                            sell_too_early += 1
+                        else:
+                            result['status'] = 'sell_correct'
+                            sell_correct += 1
+                            
+                except Exception as e:
+                    print(f"获取{stock_code}后续价格失败: {e}")
+                    result['status'] = 'invalid_date'
+                
+                records.append(result)
+            
+            # 计算汇总统计
+            summary = {
+                'total_count': total_count,
+                'sell_too_early': sell_too_early,
+                'sell_correct': sell_correct,
+                'avg_change_1w': 0.0,
+                'avg_change_2w': 0.0,
+                'avg_change_3w': 0.0,
+                'avg_change_4w': 0.0
+            }
+            
+            # 计算平均涨跌幅
+            for weeks in [1, 2, 3, 4]:
+                changes = [r[f'change_{weeks}w'] for r in records if r.get(f'change_{weeks}w') is not None]
+                if changes:
+                    summary[f'avg_change_{weeks}w'] = round(sum(changes) / len(changes), 2)
+            
+            return {
+                'success': True,
+                'records': records,
+                'summary': summary
+            }
+            
+        except Exception as e:
+            print(f"获取卖出分析失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'message': str(e)}
 
 
 def main():
@@ -1364,7 +1756,7 @@ def main():
     print("交易管理模块测试")
     print("=" * 60)
     
-    manager = TradingManager('trading_system.db')
+    manager = TradingManager()
     manager.connect()
     
     try:

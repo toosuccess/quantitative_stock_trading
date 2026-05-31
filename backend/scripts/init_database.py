@@ -64,6 +64,7 @@ def init_database(db_path='trading_system.db'):
         ps_ratio DECIMAL(10,4),
         dividend_yield DECIMAL(10,4),
         status VARCHAR(20) DEFAULT 'normal',
+        is_favorite INTEGER DEFAULT 0,
         create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
         update_time DATETIME DEFAULT CURRENT_TIMESTAMP,
         remark TEXT

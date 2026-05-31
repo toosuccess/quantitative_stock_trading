@@ -6,143 +6,6 @@
       </template>
     </el-page-header>
 
-    <!-- 评价体系说明卡片 -->
-    <el-card style="margin-top: 20px;">
-      <template #header>
-        <div class="card-header">
-          <span>评价体系说明</span>
-          <el-button type="text" @click="showScoringSystem = !showScoringSystem">
-            {{ showScoringSystem ? '收起' : '展开' }}
-          </el-button>
-        </div>
-      </template>
-      <el-collapse-transition>
-        <div v-show="showScoringSystem" class="scoring-system">
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <div class="score-section">
-                <h4>技术面评分（满分100分）</h4>
-                <ul>
-                  <li>均线系统（25分）：股价站稳20日均线且M20向上，均线多头排列</li>
-                  <li>成交量（25分）：当日成交量＞5日/60日均量，换手率5%-20%</li>
-                  <li>趋势指标（20分）：DMI的+DI＞-DI且ADX/ADXR上升，MACD金叉</li>
-                  <li>资金指标（15分）：OBV＞MAOBV且持续上行，资金净流入</li>
-                  <li>布林线（15分）：股价位于上轨和中轨之间，且未超买</li>
-                </ul>
-              </div>
-              <div class="score-section">
-                <h4>基本面评分（满分100分）</h4>
-                <ul>
-                  <li>市盈率PE（15分）：
-                    <ul style="margin-top: 4px; color: #909399;">
-                      <li>PE &lt; 20：15分（估值合理）</li>
-                      <li>PE 20-30：10分（估值适中）</li>
-                      <li>PE 30-50：5分（估值偏高）</li>
-                      <li>PE &gt; 50：0分（估值过高）</li>
-                    </ul>
-                  </li>
-                  <li>市净率PB（15分）：
-                    <ul style="margin-top: 4px; color: #909399;">
-                      <li>PB &lt; 2：15分（资产价值高）</li>
-                      <li>PB 2-3：10分（资产价值适中）</li>
-                      <li>PB 3-5：5分（资产价值偏低）</li>
-                      <li>PB &gt; 5：0分（资产价值低）</li>
-                    </ul>
-                  </li>
-                  <li>净利润增长率（20分）：
-                    <ul style="margin-top: 4px; color: #909399;">
-                      <li>增长率 &gt; 30%：20分（盈利能力强）</li>
-                      <li>增长率 15-30%：15分（盈利能力良好）</li>
-                      <li>增长率 0-15%：10分（盈利平稳）</li>
-                      <li>增长率 &lt; 0%：0分（盈利下滑）</li>
-                    </ul>
-                  </li>
-                  <li>营收增长率（15分）：
-                    <ul style="margin-top: 4px; color: #909399;">
-                      <li>增长率 &gt; 20%：15分（业务扩张快）</li>
-                      <li>增长率 10-20%：10分（业务稳健）</li>
-                      <li>增长率 0-10%：5分（业务平稳）</li>
-                      <li>增长率 &lt; 0%：0分（业务萎缩）</li>
-                    </ul>
-                  </li>
-                  <li>ROE（20分）：
-                    <ul style="margin-top: 4px; color: #909399;">
-                      <li>ROE &gt; 20%：20分（回报优秀）</li>
-                      <li>ROE 15-20%：15分（回报良好）</li>
-                      <li>ROE 10-15%：10分（回报一般）</li>
-                      <li>ROE 5-10%：5分（回报偏低）</li>
-                      <li>ROE &lt; 5%：0分（回报较差）</li>
-                    </ul>
-                  </li>
-                  <li>负债率（15分）：
-                    <ul style="margin-top: 4px; color: #909399;">
-                      <li>负债率 &lt; 40%：15分（财务稳健）</li>
-                      <li>负债率 40-60%：10分（财务适中）</li>
-                      <li>负债率 60-80%：5分（财务风险）</li>
-                      <li>负债率 &gt; 80%：0分（财务风险高）</li>
-                    </ul>
-                  </li>
-                </ul>
-              </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="score-section">
-                <h4>消息面加减分项</h4>
-                <ul>
-                  <li>行业利好：行业政策支持、行业景气度提升（+5~+15分）</li>
-                  <li>公司利好：业绩预告、中标、合作等利好消息（+5~+15分）</li>
-                  <li>机构评级：券商研报评级、目标价（+5~+15分）</li>
-                  <li>资金动向：北向资金、机构持仓变化（+5~+10分）</li>
-                  <li>负面消息：业绩下滑、诉讼等负面新闻（-5~-15分）</li>
-                </ul>
-                <div style="color: #909399; font-size: 12px; margin-top: 8px;">
-                  注：根据消息利好利空直接加减分，无基准分
-                </div>
-              </div>
-              <div class="score-section">
-                <h4>政策面评分项</h4>
-                <ul>
-                  <li>未来产业（数字经济、人工智能、核聚变、6G）：+10分</li>
-                  <li>战略性新兴产业（新能源、新材料、高端制造、半导体、生物医药）：+8分</li>
-                  <li>民生消费（消费升级）：+5分</li>
-                  <li>其他行业：+3分</li>
-                </ul>
-                <div style="color: #909399; font-size: 12px; margin-top: 8px;">
-                  注：根据行业类型和政策支持力度评分
-                </div>
-              </div>
-              <div class="score-section">
-                <h4>减项扣分（负分制）</h4>
-                <ul>
-                  <li>高质押率：-10分</li>
-                  <li>减持公告：-15分</li>
-                  <li>诉讼风险：-20分</li>
-                  <li>财务异常：-15分</li>
-                  <li>限售解禁：-10分</li>
-                  <li>负面新闻：-10分</li>
-                </ul>
-              </div>
-            </el-col>
-          </el-row>
-          <el-divider />
-          <div class="score-formula">
-            <strong>综合评分公式：</strong>技术面×0.5 + 基本面×0.5 + 消息面加减分 + 政策面加减分 - 减项扣分
-            <div style="margin-top: 8px; color: #909399; font-size: 13px;">
-              注：消息面和政策面作为加减分项，根据利好利空直接加减分
-            </div>
-          </div>
-          <div class="rating-standard">
-            <strong>评级标准：</strong>
-            <el-tag type="success" size="small">90-100分 强烈推荐</el-tag>
-            <el-tag type="primary" size="small">70-89分 推荐</el-tag>
-            <el-tag type="warning" size="small">50-69分 中性</el-tag>
-            <el-tag type="info" size="small">30-49分 观望</el-tag>
-            <el-tag type="danger" size="small">0-29分 不推荐</el-tag>
-          </div>
-        </div>
-      </el-collapse-transition>
-    </el-card>
-
     <el-row :gutter="20" style="margin-top: 20px;">
       <el-col :span="4">
         <el-card class="stat-card">
@@ -270,12 +133,32 @@
       <template #header>
         <div class="card-header">
           <span>最新评分明细（{{ latestRecord.create_time || latestRecord.score_date }}）</span>
+          <div style="display: flex; align-items: center; gap: 12px; font-size: 13px;">
+            <span style="color: #606266;">综合评分公式：技术面×0.6 + 基本面×0.4 + 消息面加减分 + 政策面加减分 - 减项扣分</span>
+            <el-tag type="success" size="small">90-100 强烈推荐</el-tag>
+            <el-tag type="primary" size="small">70-89 推荐</el-tag>
+            <el-tag type="warning" size="small">50-69 中性</el-tag>
+            <el-tag type="info" size="small">30-49 观望</el-tag>
+            <el-tag type="danger" size="small">0-29 不推荐</el-tag>
+          </div>
         </div>
       </template>
       
       <el-tabs v-model="activeTab">
         <!-- 技术面明细 -->
         <el-tab-pane label="技术面明细" name="technical">
+          <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
+            <template #title>
+              <span style="font-weight: 600;">技术面评分规则（满分100分）</span>
+            </template>
+            <div style="font-size: 13px; line-height: 2;">
+              <div>均线系统（25分）：股价站稳20日均线且M20向上，20日均线在60日均线上方，均线多头排列</div>
+              <div>成交量（25分）：当日成交量＞5日/60日均量，换手率5%-20%</div>
+              <div>趋势指标（20分）：DMI的+DI＞-DI且ADX/ADXR上升，MACD金叉</div>
+              <div>资金指标（15分）：OBV＞MAOBV且持续上行，资金净流入</div>
+              <div>布林线（15分）：股价位于上轨和中轨之间，且未超买</div>
+            </div>
+          </el-alert>
           <div class="detail-section" v-if="technicalDetail">
             <el-row :gutter="20">
               <el-col :span="8" v-for="(item, key) in technicalDetail" :key="key">
@@ -296,6 +179,28 @@
         
         <!-- 基本面明细 -->
         <el-tab-pane label="基本面明细" name="fundamental">
+          <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
+            <template #title>
+              <span style="font-weight: 600;">基本面评分规则（满分100分）</span>
+            </template>
+            <div style="font-size: 13px; line-height: 2;">
+              <div><strong>一、盈利能力（30分）</strong></div>
+              <div style="padding-left: 12px;">ROE（20分）：≥20%=20分 | ≥15%=16分 | ≥10%=12分 | ≥5%=6分 | &lt;5%=0分</div>
+              <div style="padding-left: 12px;">净利率（10分）：≥20%=10分 | ≥10%=8分 | ≥5%=5分 | &gt;0%=2分 | ≤0%=0分</div>
+              <div><strong>二、成长能力（25分）</strong></div>
+              <div style="padding-left: 12px;">净利润增长率（15分）：≥50%=15分 | ≥20%=12分 | ≥10%=8分 | ≥0%=4分 | &lt;0%=0分</div>
+              <div style="padding-left: 12px;">营收增长率（10分）：≥30%=10分 | ≥15%=8分 | ≥5%=5分 | ≥0%=2分 | &lt;0%=0分</div>
+              <div><strong>三、估值（20分）</strong></div>
+              <div style="padding-left: 12px;">PE（12分）：0-15=12分 | 15-25=10分 | 25-40=6分 | &gt;40=2分 | ≤0=0分</div>
+              <div style="padding-left: 12px;">PB（8分）：0-2=8分 | 2-4=6分 | 4-6=3分 | &gt;6=1分 | ≤0=0分</div>
+              <div><strong>四、财务健康（15分）</strong></div>
+              <div style="padding-left: 12px;">负债率（10分）：≤30%=10分 | ≤50%=8分 | ≤70%=5分 | &gt;70%=0分</div>
+              <div style="padding-left: 12px;">流动比率（5分）：≥2=5分 | ≥1.5=4分 | ≥1=3分 | &gt;0=1分 | ≤0=0分</div>
+              <div><strong>五、现金流&amp;运营（10分）</strong></div>
+              <div style="padding-left: 12px;">资产周转率（5分）：≥30%=5分 | ≥20%=4分 | ≥10%=3分 | &gt;0%=1分 | ≤0=0分</div>
+              <div style="padding-left: 12px;">现金流动比率（5分）：≥1.5=5分 | ≥1=4分 | ≥0.5=3分 | &gt;0=1分 | ≤0=0分</div>
+            </div>
+          </el-alert>
           <div class="detail-section" v-if="fundamentalDetail">
             <el-row :gutter="20">
               <el-col :span="8" v-for="(item, key) in fundamentalDetail" :key="key">
@@ -317,6 +222,19 @@
         
         <!-- 消息面明细 -->
         <el-tab-pane label="消息面明细" name="news">
+          <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
+            <template #title>
+              <span style="font-weight: 600;">消息面加减分规则</span>
+            </template>
+            <div style="font-size: 13px; line-height: 2;">
+              <div>行业利好：行业政策支持、行业景气度提升（+5~+15分）</div>
+              <div>公司利好：业绩预告、中标、合作等利好消息（+5~+15分）</div>
+              <div>机构评级：券商研报评级、目标价（+5~+15分）</div>
+              <div>资金动向：北向资金、机构持仓变化（+5~+10分）</div>
+              <div>负面消息：业绩下滑、诉讼等负面新闻（-5~-15分）</div>
+              <div style="color: #909399; margin-top: 4px;">注：根据消息利好利空直接加减分，无基准分</div>
+            </div>
+          </el-alert>
           <div class="detail-section" v-if="newsDetail && newsDetail.events && newsDetail.events.length > 0">
             <el-table :data="newsDetail.events" style="width: 100%">
               <el-table-column prop="date" label="日期" width="120" />
@@ -361,6 +279,18 @@
         
         <!-- 政策面明细 -->
         <el-tab-pane label="政策面明细" name="policy">
+          <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
+            <template #title>
+              <span style="font-weight: 600;">政策面评分规则</span>
+            </template>
+            <div style="font-size: 13px; line-height: 2;">
+              <div>未来产业（数字经济、人工智能、核聚变、6G）：+10分</div>
+              <div>战略性新兴产业（新能源、新材料、高端制造、半导体、生物医药）：+8分</div>
+              <div>民生消费（消费升级）：+5分</div>
+              <div>其他行业：+3分</div>
+              <div style="color: #909399; margin-top: 4px;">注：根据行业类型和政策支持力度评分</div>
+            </div>
+          </el-alert>
           <div class="detail-section" v-if="policyDetail && policyDetail.policies && policyDetail.policies.length > 0">
             <el-table :data="policyDetail.policies" style="width: 100%">
               <el-table-column prop="date" label="日期" width="120" />
@@ -405,6 +335,14 @@
         
         <!-- 减项明细 -->
         <el-tab-pane label="减项扣分明细" name="deduction">
+          <el-alert type="warning" :closable="false" style="margin-bottom: 16px;">
+            <template #title>
+              <span style="font-weight: 600;">减项扣分规则（负分制）</span>
+            </template>
+            <div style="font-size: 13px; line-height: 1.8;">
+              高质押率：-10分 | 减持公告：-15分 | 诉讼风险：-20分 | 财务异常：-15分 | 限售解禁：-10分 | 负面新闻：-10分
+            </div>
+          </el-alert>
           <div class="detail-section" v-if="deductionDetail && deductionDetail.items && deductionDetail.items.length > 0">
             <el-table :data="deductionDetail.items" style="width: 100%">
               <el-table-column prop="type" label="扣分类型" width="150">
@@ -521,7 +459,6 @@ const scoreHistory = ref([])
 const stockInfo = ref(null)
 const loading = ref(false)
 const indicatorChart = ref(null)
-const showScoringSystem = ref(false)
 const activeTab = ref('technical')
 const tradePlans = ref([])
 
@@ -607,12 +544,16 @@ const getTechnicalLabel = (key) => {
 
 const getFundamentalLabel = (key) => {
   const labels = {
-    'pe': '市盈率PE',
-    'pb': '市净率PB',
-    'net_profit_growth': '净利润增长率',
-    'revenue_growth': '营收增长率',
-    'roe': 'ROE',
-    'debt_ratio': '负债率'
+    'roe': 'ROE（盈利能力）',
+    'net_margin': '净利率（盈利能力）',
+    'net_profit_growth': '净利润增长率（成长能力）',
+    'revenue_growth': '营收增长率（成长能力）',
+    'pe': '市盈率PE（估值）',
+    'pb': '市净率PB（估值）',
+    'debt_ratio': '负债率（财务健康）',
+    'current_ratio': '流动比率（财务健康）',
+    'asset_turnover': '资产周转率（现金流&运营）',
+    'cash_flow_ratio': '现金流动比率（现金流&运营）'
   }
   return labels[key] || key
 }
@@ -983,43 +924,6 @@ onMounted(() => {
   align-items: center;
 }
 
-.scoring-system {
-  font-size: 13px;
-}
-
-.score-section {
-  margin-bottom: 15px;
-}
-
-.score-section h4 {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-  color: #303133;
-}
-
-.score-section ul {
-  margin: 0;
-  padding-left: 20px;
-}
-
-.score-section li {
-  margin: 4px 0;
-  color: #606266;
-}
-
-.score-formula {
-  background: #f5f7fa;
-  padding: 10px 15px;
-  border-radius: 4px;
-  margin-bottom: 10px;
-}
-
-.rating-standard {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
 .stat-card {
   text-align: center;
   padding: 10px;
@@ -1109,6 +1013,7 @@ onMounted(() => {
   font-size: 12px;
   color: #909399;
   line-height: 1.5;
+  white-space: pre-line;
 }
 
 .summary-content {

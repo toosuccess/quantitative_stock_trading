@@ -1,92 +1,84 @@
-"""
-修复账户金额脚本
-1. 初始化账户的available_cash为total_assets
-2. 根据交易记录重新计算账户金额
-"""
 
-import sqlite3
-from pathlib import Path
+"""
+修复账户余额问题
+根据交易记录重新计算正确的可用资金和盈亏
+"""
+import pymysql
+from app.database_config import MYSQL_CONFIG
 
-def fix_account_balance():
-    db_path = Path(__file__).parent / 'database' / 'trading_system.db'
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=pymysql.cursors.DictCursor)
+cursor = conn.cursor()
+
+print("="*80)
+print("  修复账户余额")
+print("="*80)
+
+# 查询账户信息
+cursor.execute('''
+    SELECT account_id, account_name, initial_assets, available_cash 
+    FROM account_info
+''')
+account = cursor.fetchone()
+
+if not account:
+    print("未找到账户！")
+    exit(1)
+
+initial = float(account['initial_assets'])
+current_available = float(account['available_cash'])
+
+print(f"\n账户: {account['account_name']}")
+print(f"初始资金: {initial:.2f}")
+print(f"当前可用资金: {current_available:.2f}")
+
+# 计算所有交易的净影响
+cursor.execute('''
+    SELECT 
+        SUM(CASE WHEN trade_type = '买入' THEN trade_amount ELSE 0 END) as total_buy,
+        SUM(CASE WHEN trade_type = '卖出' THEN trade_amount ELSE 0 END) as total_sell,
+        COUNT(CASE WHEN trade_type = '买入' THEN 1 END) as buy_count,
+        COUNT(CASE WHEN trade_type = '卖出' THEN 1 END) as sell_count
+    FROM trade_record 
+    WHERE account_id = %s
+''', (account['account_id'],))
+
+trade_summary = cursor.fetchone()
+total_buy = float(trade_summary['total_buy']) if trade_summary['total_buy'] else 0
+total_sell = float(trade_summary['total_sell']) if trade_summary['total_sell'] else 0
+
+print(f"\n交易统计:")
+print(f"  买入次数: {trade_summary['buy_count']}, 总额: {total_buy:.2f}")
+print(f"  卖出次数: {trade_summary['sell_count']}, 总额: {total_sell:.2f}")
+
+# 计算正确的可用资金
+correct_available = initial - total_buy + total_sell
+net_profit = total_sell - total_buy
+
+print(f"\n【计算结果】")
+print(f"  理论可用资金: {correct_available:.2f}")
+print(f"  实际可用资金: {current_available:.2f}")
+print(f"  差异: {correct_available - current_available:+.2f}")
+print(f"  净盈亏(交易): {net_profit:+.2f}")
+
+if abs(correct_available - current_available) > 0.01:
+    print(f"\n⚠️ 发现错误！正在修复...")
     
-    print("=" * 50)
-    print("修复账户金额")
-    print("=" * 50)
-    
-    # 1. 获取所有账户
-    cursor.execute("SELECT * FROM account_info")
-    accounts = cursor.fetchall()
-    
-    for account in accounts:
-        account_id = account['account_id']
-        account_name = account['account_name']
-        total_assets = account['total_assets']
-        
-        print(f"\n账户: {account_name} ({account_id})")
-        print(f"  总资产: {total_assets}")
-        
-        # 2. 计算该账户的买入总金额
-        cursor.execute('''
-            SELECT COALESCE(SUM(trade_amount), 0) as total_buy
-            FROM trade_record 
-            WHERE account_id = ? AND trade_type = '买入'
-        ''', (account_id,))
-        buy_result = cursor.fetchone()
-        total_buy = buy_result['total_buy'] if buy_result else 0
-        
-        # 3. 计算该账户的卖出总金额
-        cursor.execute('''
-            SELECT COALESCE(SUM(trade_amount), 0) as total_sell
-            FROM trade_record 
-            WHERE account_id = ? AND trade_type = '卖出'
-        ''', (account_id,))
-        sell_result = cursor.fetchone()
-        total_sell = sell_result['total_sell'] if sell_result else 0
-        
-        print(f"  买入总金额: {total_buy}")
-        print(f"  卖出总金额: {total_sell}")
-        
-        # 4. 计算当前市值（买入 - 卖出）
-        market_value = total_buy - total_sell
-        
-        # 5. 计算可用现金（总资产 - 市值）
-        available_cash = total_assets - market_value
-        
-        print(f"  计算后市值: {market_value}")
-        print(f"  计算后可用现金: {available_cash}")
-        
-        # 6. 更新账户
-        cursor.execute('''
-            UPDATE account_info 
-            SET available_cash = ?, market_value = ?
-            WHERE account_id = ?
-        ''', (available_cash, market_value, account_id))
-        
-        print(f"  ✓ 账户已更新")
+    # 更新账户的可用资金
+    cursor.execute('''
+        UPDATE account_info 
+        SET available_cash = %s,
+            total_assets = %s,
+            profit_loss = %s,
+            update_time = NOW()
+        WHERE account_id = %s
+    ''', (correct_available, correct_available, net_profit, account['account_id']))
     
     conn.commit()
-    
-    # 7. 验证更新结果
-    print("\n" + "=" * 50)
-    print("验证更新结果")
-    print("=" * 50)
-    
-    cursor.execute("SELECT * FROM account_info")
-    accounts = cursor.fetchall()
-    
-    for account in accounts:
-        print(f"\n{account['account_name']}:")
-        print(f"  总资产: {account['total_assets']}")
-        print(f"  可用现金: {account['available_cash']}")
-        print(f"  市值: {account['market_value']}")
-        print(f"  验证: {account['available_cash']} + {account['market_value']} = {account['available_cash'] + account['market_value']}")
-    
-    conn.close()
-    print("\n修复完成!")
+    print(f"✅ 已修复！")
+    print(f"   可用资金更新为: {correct_available:.2f}")
+    print(f"   盈亏更新为: {net_profit:+.2f}")
+else:
+    print(f"\n✅ 数据正确，无需修复")
 
-if __name__ == '__main__':
-    fix_account_balance()
+conn.close()
+print("\n完成！")

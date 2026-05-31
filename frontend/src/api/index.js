@@ -16,13 +16,24 @@ api.interceptors.response.use(
 export const scoreApi = {
   getScoreList: (limit, rating) => api.get(`/scores?limit=${limit || 20}${rating ? `&rating=${rating}` : ''}`),
   getScoreByCode: (code) => api.get(`/scores/${code}`),
-  getStockPoolScores: () => api.get('/stocks/pool/scores')
+  getStockPoolScores: () => api.get('/stocks/pool/scores'),
+  cleanup: () => api.post('/scores/cleanup')
 }
 
 export const stockApi = {
   getStockPool: () => api.get('/stocks/pool'),
   getRealtime: (code) => api.get(`/stocks/realtime/${code}`),
-  getIndicators: (code) => api.get(`/stocks/indicators/${code}`)
+  getIndicators: (code) => api.get(`/stocks/indicators/${code}`),
+  batchEvaluate: () => api.post('/stocks/batch-evaluate'),
+  batchEvaluateAsync: () => api.post('/stocks/batch-evaluate-async'),
+  getEvaluateProgress: (taskId) => api.get(`/stocks/evaluate-progress/${taskId}`),
+  getReviewInfo: (stockCode) => api.get(`/stocks/${stockCode}/review-info`),
+  getReviewList: (params = {}) => api.get('/stocks/review-list', { params })
+}
+
+export const newsApi = {
+  getMarketNews: (params = {}) => api.get('/news', { params }),
+  refreshNews: () => api.post('/news/refresh')
 }
 
 export const accountApi = {
@@ -71,8 +82,10 @@ export const tradeApi = {
     return api.get(url)
   },
   createStep: (data) => api.post('/trade/step', data),
-  executeStep: (stepId, tradePrice, tradeQuantity, accountId) => 
-    api.post(`/trade/step/${stepId}/execute?trade_price=${tradePrice}&trade_quantity=${tradeQuantity}&account_id=${accountId || 'ACC001'}`)
+  executeStep: (stepId, tradePrice, tradeQuantity, accountId) =>
+    api.post(`/trade/step/${stepId}/execute?trade_price=${tradePrice}&trade_quantity=${tradeQuantity}&account_id=${accountId || 'ACC001'}`),
+  getSellAnalysis: () => api.get('/trade/sell-analysis'),
+  getSellRecords: () => api.get('/trade/sell-records')
 }
 
 export default api

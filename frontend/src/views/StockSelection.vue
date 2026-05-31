@@ -57,21 +57,79 @@
               <el-option label="观望" value="观望" />
               <el-option label="不推荐" value="不推荐" />
             </el-select>
+            <el-button 
+              :type="showOnlyFavorite ? 'warning' : 'default'"
+              @click="toggleFavoriteFilter"
+              style="margin-left: 10px;"
+            >
+              <el-icon><Star /></el-icon>
+              只看收藏 ({{ favoriteCount }})
+            </el-button>
           </div>
-          <el-button 
-            type="warning" 
-            :disabled="selectedStocks.length === 0"
-            @click="batchEvaluate"
-            :loading="batchEvaluating"
-          >
-            <el-icon><Check /></el-icon>
-            批量评价 ({{ selectedStocks.length }})
-          </el-button>
+          <div class="button-group">
+            <el-button 
+              type="default" 
+              @click="backToTradePlan"
+              title="返回交易计划列表"
+            >
+              <el-icon><ArrowLeft /></el-icon>
+              返回交易计划
+            </el-button>
+            <el-button 
+              type="info" 
+              @click="selectExecutingStocks"
+              title="一键勾选正在执行的股票"
+            >
+              <el-icon><Select /></el-icon>
+              勾选执行中
+            </el-button>
+            <el-button 
+              type="warning" 
+              :disabled="selectedStocks.length === 0"
+              @click="batchEvaluate"
+              :loading="batchEvaluating"
+            >
+              <el-icon><Check /></el-icon>
+              批量评价 ({{ selectedStocks.length }})
+            </el-button>
+            <el-button
+              type="primary"
+              @click="batchEvaluateAll"
+              :disabled="evaluating"
+              title="一键评价所有股票"
+              :style="{ opacity: evaluating ? 0.7 : 1 }"
+            >
+              <el-icon><Refresh /></el-icon>
+              <span v-if="evaluating && evaluateProgress.percentage > 0">
+                {{ evaluateProgress.percentage }}% ({{ evaluateProgress.current }}/{{ evaluateProgress.total }})
+                <template v-if="evaluateProgress.currentStock">
+                  - {{ evaluateProgress.currentStock }}
+                </template>
+              </span>
+              <span v-else-if="evaluating">
+                启动中...
+              </span>
+              <span v-else>
+                一键评价
+              </span>
+            </el-button>
+            <el-button 
+              type="danger" 
+              @click="cleanupData"
+              :loading="cleaning"
+              title="清理垃圾数据"
+            >
+              <el-icon><Delete /></el-icon>
+              数据清理
+            </el-button>
+          </div>
         </div>
       </template>
       
       <el-table 
+        ref="stockTableRef"
         :data="paginatedData" 
+        row-key="stock_code"
         style="width: 100%" 
         v-loading="loading"
         @sort-change="handleSortChange"
@@ -79,11 +137,21 @@
       >
         <el-table-column type="selection" width="55" />
         <el-table-column prop="stock_code" label="股票代码" width="100" />
-        <el-table-column prop="stock_name" label="股票名称" width="120">
+        <el-table-column prop="stock_name" label="股票名称" width="200">
           <template #default="scope">
-            <div style="display: flex; align-items: center; gap: 4px;">
+            <div style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+              <el-icon 
+                class="favorite-icon" 
+                :class="{ 'is-favorite': scope.row.is_favorite }"
+                @click.stop="toggleFavorite(scope.row)"
+                :title="scope.row.is_favorite ? '点击取消收藏' : '点击收藏'"
+              >
+                <Star />
+              </el-icon>
               <el-tag v-if="scope.row.is_leader" type="danger" size="small">龙头</el-tag>
               <span>{{ scope.row.stock_name }}</span>
+              <el-tag v-if="scope.row.sector" type="info" size="small" effect="plain">{{ scope.row.sector }}</el-tag>
+              <el-tag v-else-if="scope.row.industry" type="info" size="small" effect="plain">{{ scope.row.industry }}</el-tag>
             </div>
           </template>
         </el-table-column>
@@ -92,33 +160,91 @@
             {{ scope.row.close_price?.toFixed(2) }}
           </template>
         </el-table-column>
-        <el-table-column prop="composite_score" label="综合评分" width="140" sortable="custom">
+        <el-table-column prop="composite_score" width="160" sortable="custom">
+          <template #header>
+            <div class="score-header">
+              <span>综合评分</span>
+              <div class="trend-legend">
+                <span class="legend-item"><span class="legend-line price"></span>股价</span>
+                <span class="legend-item"><span class="legend-line score"></span>综合</span>
+              </div>
+            </div>
+          </template>
           <template #default="scope">
             <div class="score-cell">
               <el-tag :type="getScoreType(scope.row.composite_score || scope.row.latest_score)">
                 {{ (scope.row.composite_score || scope.row.latest_score || 0).toFixed(0) }}
               </el-tag>
-              <svg v-if="(scope.row.score_history && scope.row.score_history.length > 1) || (scope.row.price_history && scope.row.price_history.length > 1)" 
-                   class="trend-chart" 
-                   viewBox="0 0 60 20" 
-                  >
-                <polyline
-                  v-if="scope.row.price_history && scope.row.price_history.length > 1"
-                  :points="getPriceTrendPoints(scope.row.price_history)"
-                  fill="none"
-                  stroke="#409eff"
-                  stroke-width="1.5"
-                  opacity="0.6"
-                />
-                <polyline
-                  v-if="scope.row.score_history && scope.row.score_history.length > 1"
-                  :points="getTrendPoints(scope.row.score_history)"
-                  fill="none"
-                  :stroke="getTrendColor(scope.row.score_history)"
-                  stroke-width="1.5"
-                />
-              </svg>
+              <el-tooltip 
+                v-if="(scope.row.score_history && scope.row.score_history.length >= 1) || (scope.row.price_history && scope.row.price_history.length >= 1)"
+                placement="top"
+                effect="light"
+                :show-after="200"
+              >
+                <template #content>
+                  <div class="trend-tooltip">
+                    <!-- 综合得分和股价走势（按日期整合） -->
+                    <div v-if="scope.row.score_history && scope.row.score_history.length > 0">
+                      <div class="tooltip-title">综合得分与股价走势</div>
+                      <div v-for="(item, idx) in scope.row.score_history.slice(-5)" :key="idx" class="tooltip-row">
+                        <span class="tooltip-date">{{ item.date }}</span>
+                        <span class="tooltip-score">{{ item.score?.toFixed(1) }}分</span>
+                        <span class="tooltip-price">¥{{ getPriceByDate(scope.row.price_history, item.date)?.toFixed(2) || 'N/A' }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <svg class="trend-chart" viewBox="0 0 60 20">
+                  <polyline
+                    v-if="scope.row.price_history && scope.row.price_history.length >= 1"
+                    :points="getPriceTrendPoints(scope.row.price_history)"
+                    fill="none"
+                    stroke="#409eff"
+                    stroke-width="1.5"
+                    stroke-dasharray="4,2"
+                  />
+                  <g v-if="scope.row.price_history && scope.row.price_history.length >= 1">
+                    <circle
+                      v-for="(point, idx) in getPriceCirclePoints(scope.row.price_history)"
+                      :key="'p'+idx"
+                      :cx="point.x"
+                      :cy="point.y"
+                      r="2"
+                      fill="#409eff"
+                      class="trend-point"
+                    />
+                  </g>
+                  <polyline
+                    v-if="scope.row.score_history && scope.row.score_history.length >= 1"
+                    :points="getTrendPoints(scope.row.score_history)"
+                    fill="none"
+                    stroke="#e6a23c"
+                    stroke-width="1.5"
+                  />
+                  <g v-if="scope.row.score_history && scope.row.score_history.length >= 1">
+                    <circle
+                      v-for="(point, idx) in getScoreCirclePoints(scope.row.score_history)"
+                      :key="'s'+idx"
+                      :cx="point.x"
+                      :cy="point.y"
+                      r="2"
+                      fill="#e6a23c"
+                      class="trend-point"
+                    />
+                  </g>
+                </svg>
+              </el-tooltip>
             </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="执行" width="130" align="center" prop="plan_profit_rate" sortable="custom">
+          <template #default="scope">
+            <div v-if="scope.row.plan_status" class="plan-status-cell" :class="scope.row.plan_status">
+              <div class="plan-price">执行中</div>
+              <div class="plan-profit">{{ scope.row.plan_profit >= 0 ? '+' : '' }}{{ scope.row.plan_profit?.toFixed(0) }}元</div>
+              <div class="plan-rate">{{ scope.row.plan_profit_rate >= 0 ? '+' : '' }}{{ scope.row.plan_profit_rate?.toFixed(1) }}%</div>
+            </div>
+            <span v-else class="no-plan">待执行</span>
           </template>
         </el-table-column>
         <el-table-column prop="latest_rating" label="评级" width="80">
@@ -128,6 +254,45 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="review_score" label="复审得分" width="100" sortable="custom" align="center">
+          <template #default="scope">
+            <div v-if="scope.row.reviewData && scope.row.reviewData.reviewed">
+              <el-tag 
+                :type="getReviewScoreType(scope.row.reviewData.review_score)" 
+                size="small"
+                effect="dark"
+                class="review-score-tag"
+              >
+                {{ scope.row.reviewData.review_score?.toFixed(1) }}
+              </el-tag>
+              <el-tag 
+                :type="getReviewRatingType(scope.row.reviewData.review_rating)" 
+                size="small"
+                class="review-rating-tag"
+              >
+                {{ scope.row.reviewData.review_rating }}
+              </el-tag>
+            </div>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="查看" width="80" align="center">
+          <template #default="scope">
+            <div v-if="scope.row.reviewData && scope.row.reviewData.reviewed">
+              <el-button size="small" type="primary" link @click="showReviewDetail(scope.row)">
+                <el-icon><View /></el-icon> 查看
+              </el-button>
+            </div>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="review_time" label="复审日期" width="170" align="center">
+          <template #default="scope">
+            <span v-if="scope.row.reviewData && scope.row.reviewData.reviewed">{{ formatReviewTime(scope.row.reviewData.review_time) }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+
         <el-table-column label="各维度评分" width="180">
           <el-table-column prop="technical_score" label="技术面" width="60" sortable="custom">
             <template #default="scope">
@@ -215,19 +380,7 @@
             </template>
           </el-table-column>
         </el-table-column>
-        <el-table-column prop="summary" label="综合评价" min-width="200">
-          <template #default="scope">
-            <div class="summary-text">{{ scope.row.summary || '-' }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="执行" width="50" align="center">
-          <template #default="scope">
-            <el-tooltip v-if="scope.row.plan_status" :content="getPlanStatusText(scope.row)" placement="top">
-              <span class="plan-status-dot" :class="scope.row.plan_status"></span>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column prop="create_time" label="最近打分时间" width="180">
+        <el-table-column prop="create_time" label="最近打分时间" width="180" sortable="custom">
           <template #default="scope">
             <span>{{ scope.row.create_time || '-' }}</span>
           </template>
@@ -235,11 +388,14 @@
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="scope">
             <div class="operation-buttons">
+              <el-button size="small" type="primary" @click="viewStockIndicator(scope.row.stock_code)">
+                指标
+              </el-button>
               <el-button size="small" type="primary" @click="viewDetail(scope.row)">
-                查看详情
+                详情
               </el-button>
               <el-button size="small" type="success" @click="createPlan(scope.row)">
-                创建计划
+                计划
               </el-button>
             </div>
           </template>
@@ -283,29 +439,70 @@
         </p>
       </div>
     </el-dialog>
+
+    <!-- 复审意见详情弹窗 -->
+    <el-dialog 
+      v-model="showReviewDetailDialog" 
+      title="技术面复审报告" 
+      width="700px"
+      :close-on-click-modal="true"
+      class="review-detail-dialog"
+    >
+      <div v-if="currentReviewData" class="review-detail-content">
+        <div class="detail-header">
+          <div class="detail-stock-info">
+            <h3>{{ currentReviewData.stock_name }} ({{ currentReviewData.stock_code }})</h3>
+            <div class="detail-rating-badge">
+              <el-tag :type="getReviewScoreType(currentReviewData.review_score)" size="large" effect="dark">
+                {{ currentReviewData.review_score?.toFixed(1) }}分
+              </el-tag>
+              <el-tag :type="getReviewRatingType(currentReviewData.review_rating)" size="large">
+                {{ currentReviewData.review_rating }}
+              </el-tag>
+            </div>
+          </div>
+          <div class="detail-meta">
+            <span>📅 复审时间：{{ currentReviewData.review_time }}</span>
+            <span>🏢 所属板块：{{ currentReviewData.industry || '未知' }}</span>
+          </div>
+        </div>
+
+        <el-divider />
+
+        <div class="detail-body">
+          <pre class="review-opinion-full">{{ currentReviewData.review_opinion }}</pre>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Refresh, Check } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { scoreApi } from '../api'
+import { Refresh, Check, Delete, Select, Star, ArrowLeft, Search, View } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { scoreApi, stockApi } from '../api'
 import api from '../api'
 
 const router = useRouter()
 
+const EVALUATE_STORAGE_KEY = 'stock_evaluate_status'
+
+const stockTableRef = ref(null)
 const stockPool = ref([])
 const loading = ref(false)
 const searchText = ref('')
 const ratingFilter = ref('')
+const showOnlyFavorite = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(20)
 const sortProp = ref('composite_score')
 const sortOrder = ref('descending')
 const selectedStocks = ref([])
 const batchEvaluating = ref(false)
+const evaluating = ref(false)
+const cleaning = ref(false)
 const showProgressDialog = ref(false)
 const evaluateProgress = ref({
   current: 0,
@@ -314,12 +511,10 @@ const evaluateProgress = ref({
   currentStock: ''
 })
 
+const showReviewDetailDialog = ref(false)
+const currentReviewData = ref(null)
+
 const filteredData = computed(() => {
-  /**
-   * 过滤和排序后的股票数据
-   * 支持按搜索文本和评级筛选
-   * 支持按各维度评分排序
-   */
   let data = [...stockPool.value]
   
   if (searchText.value) {
@@ -334,11 +529,51 @@ const filteredData = computed(() => {
     data = data.filter(item => item.latest_rating === ratingFilter.value)
   }
   
+  if (showOnlyFavorite.value) {
+    data = data.filter(item => item.is_favorite === 1)
+  }
+  
   if (sortProp.value && sortOrder.value) {
     data.sort((a, b) => {
-      const aVal = a[sortProp.value] || 0
-      const bVal = b[sortProp.value] || 0
-      return sortOrder.value === 'ascending' ? aVal - bVal : bVal - aVal
+      if (sortProp.value === 'review_score') {
+        const aScore = a.reviewData?.review_score ?? -1
+        const bScore = b.reviewData?.review_score ?? -1
+        return sortOrder.value === 'ascending' ? aScore - bScore : bScore - aScore
+      }
+
+      const aVal = a[sortProp.value]
+      const bVal = b[sortProp.value]
+
+      if (sortProp.value === 'plan_profit_rate') {
+        const getStatusPriority = (item) => {
+          if (!item.plan_status) return 4
+          if (item.plan_status === 'profit') return 1
+          if (item.plan_status === 'neutral') return 2
+          if (item.plan_status === 'loss') return 3
+          return 4
+        }
+
+        const aPriority = getStatusPriority(a)
+        const bPriority = getStatusPriority(b)
+
+        if (aPriority === bPriority && aPriority !== 4) {
+          const aRate = a.plan_profit_rate || 0
+          const bRate = b.plan_profit_rate || 0
+          return sortOrder.value === 'ascending' ? aRate - bRate : bRate - aRate
+        }
+
+        return sortOrder.value === 'ascending' ? aPriority - bPriority : bPriority - aPriority
+      }
+
+      if (sortProp.value === 'create_time') {
+        const aTime = aVal ? new Date(aVal).getTime() : 0
+        const bTime = bVal ? new Date(bVal).getTime() : 0
+        return sortOrder.value === 'ascending' ? aTime - bTime : bTime - aTime
+      }
+
+      const aNum = aVal || 0
+      const bNum = bVal || 0
+      return sortOrder.value === 'ascending' ? aNum - bNum : bNum - aNum
     })
   }
   
@@ -379,6 +614,10 @@ const ratingStats = computed(() => {
   return stats
 })
 
+const favoriteCount = computed(() => {
+  return stockPool.value.filter(item => item.is_favorite === 1).length
+})
+
 const getScoreType = (score) => {
   /**
    * 根据评分返回标签类型
@@ -397,23 +636,23 @@ const getTrendPoints = (history) => {
    * @param {Array} history - 评分历史数组
    * @returns {string} SVG折线点坐标字符串
    */
-  if (!history || history.length < 2) return ''
-  
+  if (!history || history.length < 1) return ''
+
   const scores = history.map(h => h.score || 0)
   const minScore = Math.min(...scores)
   const maxScore = Math.max(...scores)
   const range = maxScore - minScore || 1
-  
+
   const width = 60
   const height = 20
   const padding = 2
-  
+
   const points = scores.map((score, index) => {
-    const x = padding + (index / (scores.length - 1)) * (width - 2 * padding)
+    const x = padding + (index / Math.max(scores.length - 1, 1)) * (width - 2 * padding)
     const y = height - padding - ((score - minScore) / range) * (height - 2 * padding)
     return `${x.toFixed(1)},${y.toFixed(1)}`
   })
-  
+
   return points.join(' ')
 }
 
@@ -439,24 +678,145 @@ const getPriceTrendPoints = (history) => {
    * @param {Array} history - 股价历史数组
    * @returns {string} SVG折线点坐标字符串
    */
-  if (!history || history.length < 2) return ''
-  
+  if (!history || history.length < 1) return ''
+
   const prices = history.map(h => h.price || 0)
-  const minPrice = Math.min(...prices)
-  const maxPrice = Math.max(...prices)
-  const range = maxPrice - minPrice || 1
-  
+
   const width = 60
   const height = 20
   const padding = 2
-  
+
+  if (prices.length === 1) {
+    return `${padding},${height/2}`
+  }
+
+  const minPrice = Math.min(...prices)
+  const maxPrice = Math.max(...prices)
+  let range = maxPrice - minPrice
+
+  const minRange = maxPrice * 0.005
+  if (range < minRange && range > 0) {
+    range = minRange
+  } else if (range === 0) {
+    return `${padding},${height/2} ${width-padding},${height/2}`
+  }
+
   const points = prices.map((price, index) => {
-    const x = padding + (index / (prices.length - 1)) * (width - 2 * padding)
+    const x = padding + (index / Math.max(prices.length - 1, 1)) * (width - 2 * padding)
     const y = height - padding - ((price - minPrice) / range) * (height - 2 * padding)
     return `${x.toFixed(1)},${y.toFixed(1)}`
   })
-  
+
   return points.join(' ')
+}
+
+const getPriceCirclePoints = (history) => {
+  if (!history || history.length < 1) return []
+
+  const prices = history.map(h => h.price || 0)
+
+  const width = 60
+  const height = 20
+  const padding = 2
+
+  if (prices.length === 1) {
+    return [{
+      x: padding,
+      y: height / 2,
+      price: prices[0],
+      date: history[0].date
+    }]
+  }
+
+  const minPrice = Math.min(...prices)
+  const maxPrice = Math.max(...prices)
+  let range = maxPrice - minPrice
+
+  const minRange = maxPrice * 0.005
+  if (range < minRange && range > 0) {
+    range = minRange
+  } else if (range === 0) {
+    return prices.map((price, index) => ({
+      x: padding + (index / Math.max(prices.length - 1, 1)) * (width - 2 * padding),
+      y: height / 2,
+      price: price,
+      date: history[index].date
+    }))
+  }
+
+  return prices.map((price, index) => ({
+    x: padding + (index / Math.max(prices.length - 1, 1)) * (width - 2 * padding),
+    y: height - padding - ((price - minPrice) / range) * (height - 2 * padding),
+    price: price,
+    date: history[index].date
+  }))
+}
+
+const getPriceByDate = (priceHistory, date) => {
+  if (!priceHistory || !date) return null
+  const record = priceHistory.find(item => item.date === date)
+  return record ? record.price : null
+}
+
+const getScoreCirclePoints = (history) => {
+  if (!history || history.length < 1) return []
+
+  const scores = history.map(h => h.score || 0)
+  const minScore = Math.min(...scores)
+  const maxScore = Math.max(...scores)
+  const range = maxScore - minScore || 1
+
+  const width = 60
+  const height = 20
+  const padding = 2
+
+  return scores.map((score, index) => ({
+    x: padding + (index / Math.max(scores.length - 1, 1)) * (width - 2 * padding),
+    y: height - padding - ((score - minScore) / range) * (height - 2 * padding),
+    score: score,
+    date: history[index].date
+  }))
+}
+
+const getTechTrendPoints = (history) => {
+  if (!history || history.length < 1) return ''
+
+  const scores = history.map(h => h.score || 0)
+  const minScore = Math.min(...scores)
+  const maxScore = Math.max(...scores)
+  const range = maxScore - minScore || 1
+
+  const width = 60
+  const height = 20
+  const padding = 2
+
+  const points = scores.map((score, index) => {
+    const x = padding + (index / Math.max(scores.length - 1, 1)) * (width - 2 * padding)
+    const y = height - padding - ((score - minScore) / range) * (height - 2 * padding)
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  })
+
+  return points.join(' ')
+}
+
+const getTechCirclePoints = (history) => {
+  if (!history || history.length < 1) return []
+
+  const scores = history.map(h => h.score || 0)
+  const minScore = Math.min(...scores)
+  const maxScore = Math.max(...scores)
+  const range = maxScore - minScore || 1
+
+  const width = 60
+  const height = 20
+  const padding = 2
+
+  return scores.map((score, index) => ({
+    x: padding + (index / Math.max(scores.length - 1, 1)) * (width - 2 * padding),
+    y: height - padding - ((score - minScore) / range) * (height - 2 * padding),
+    score: score,
+    date: history[index].date
+  }))
 }
 
 const getScoreClass = (score) => {
@@ -506,12 +866,16 @@ const getTechnicalLabel = (key) => {
 
 const getFundamentalLabel = (key) => {
   const labels = {
-    'pe': '市盈率PE',
-    'pb': '市净率PB',
-    'net_profit_growth': '净利润增长率',
-    'revenue_growth': '营收增长率',
-    'roe': 'ROE',
-    'debt_ratio': '负债率'
+    'roe': 'ROE（盈利能力）',
+    'net_margin': '净利率（盈利能力）',
+    'net_profit_growth': '净利润增长率（成长能力）',
+    'revenue_growth': '营收增长率（成长能力）',
+    'pe': '市盈率PE（估值）',
+    'pb': '市净率PB（估值）',
+    'debt_ratio': '负债率（财务健康）',
+    'current_ratio': '流动比率（财务健康）',
+    'asset_turnover': '资产周转率（现金流&运营）',
+    'cash_flow_ratio': '现金流动比率（现金流&运营）'
   }
   return labels[key] || key
 }
@@ -531,6 +895,100 @@ const getNewsDetail = (row) => parseDetail(row.news_detail)
 const getPolicyDetail = (row) => parseDetail(row.policy_detail)
 const getDeductionDetail = (row) => parseDetail(row.deduction_detail)
 
+const loadReviewData = async (row) => {
+  if (row._reviewLoading) return
+  
+  row._reviewLoading = true
+  
+  try {
+    const reviewData = await stockApi.getReviewInfo(row.stock_code)
+    row.reviewData = reviewData
+    row._reviewLoading = false
+    
+    if (!reviewData.reviewed) {
+      ElMessage.info(`${row.stock_name}(${row.stock_code}) 尚未进行复审`)
+    }
+  } catch (error) {
+    console.error('获取复审信息失败:', error)
+    row.reviewData = { reviewed: false }
+    row._reviewLoading = false
+    ElMessage.error(`获取${row.stock_name}复审信息失败`)
+  }
+}
+
+const getReviewScoreType = (score) => {
+  if (score >= 85) return 'success'
+  if (score >= 70) return 'primary'
+  if (score >= 55) return 'warning'
+  if (score >= 40) return 'info'
+  return 'danger'
+}
+
+const getReviewRatingType = (rating) => {
+  const types = {
+    '强烈推荐': 'success',
+    '推荐': 'primary',
+    '中性': 'warning',
+    '谨慎': 'info',
+    '回避': 'danger'
+  }
+  return types[rating] || 'info'
+}
+
+const getReviewOpinionPreview = (opinion) => {
+  if (!opinion) return '-'
+  
+  const lines = opinion.split('\n')
+  const suggestionLine = lines.find(line => line.includes('操作建议：'))
+  
+  if (suggestionLine) {
+    return suggestionLine.replace(/.*操作建议：/, '').trim()
+  }
+  
+  return lines.slice(2, 6).join('\n') || opinion.substring(0, 100) + '...'
+}
+
+const showReviewDetail = (row) => {
+  if (row.reviewData && row.reviewData.reviewed) {
+    currentReviewData.value = row.reviewData
+    showReviewDetailDialog.value = true
+  }
+}
+
+const getReviewOpinionSummary = (reviewData) => {
+  if (!reviewData || !reviewData.reviewed) {
+    return '暂无'
+  }
+  
+  // 优先显示提取的建议
+  if (reviewData.suggestion) {
+    const maxLen = 15
+    if (reviewData.suggestion.length > maxLen) {
+      return reviewData.suggestion.substring(0, maxLen) + '...'
+    }
+    return reviewData.suggestion
+  }
+  
+  return '点击查看详情'
+}
+
+const formatReviewTime = (timeStr) => {
+  if (!timeStr) return '-'
+  
+  try {
+    const date = new Date(timeStr)
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    const seconds = String(date.getSeconds()).padStart(2, '0')
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+  } catch (e) {
+    return timeStr
+  }
+}
+
 const getPlanStatusText = (row) => {
   /**
    * 根据计划状态返回提示文本
@@ -542,15 +1000,15 @@ const getPlanStatusText = (row) => {
   const profitRate = row.plan_profit_rate || 0
   
   const statusTexts = {
-    'profit': '盈利中',
-    'loss': '亏损中',
-    'neutral': '持仓中'
+    'profit': '执行中',
+    'loss': '执行中',
+    'neutral': '执行中'
   }
   
   const profitStr = profit >= 0 ? `+${profit.toFixed(2)}` : profit.toFixed(2)
   const profitRateStr = profitRate >= 0 ? `+${profitRate.toFixed(2)}%` : `${profitRate.toFixed(2)}%`
   
-  return `有未完成计划 - ${statusTexts[status] || ''}\n盈亏: ${profitStr}元 (${profitRateStr})`
+  return `有未完成计划 - ${statusTexts[status] || '待执行'}\n盈亏: ${profitStr}元 (${profitRateStr})`
 }
 
 const handleSortChange = ({ prop, order }) => {
@@ -563,6 +1021,26 @@ const filterByRating = (rating) => {
     ratingFilter.value = ''
   } else {
     ratingFilter.value = rating
+  }
+}
+
+const toggleFavoriteFilter = () => {
+  showOnlyFavorite.value = !showOnlyFavorite.value
+  currentPage.value = 1
+}
+
+const toggleFavorite = async (row) => {
+  try {
+    const response = await api.post('/stocks/favorite', {
+      stock_code: row.stock_code
+    })
+    if (response.success) {
+      row.is_favorite = response.is_favorite
+      ElMessage.success(response.message)
+    }
+  } catch (error) {
+    console.error('收藏操作失败:', error)
+    ElMessage.error('收藏操作失败')
   }
 }
 
@@ -580,12 +1058,77 @@ const loadStockPool = async () => {
   try {
     const data = await scoreApi.getStockPoolScores()
     stockPool.value = data.stocks || []
+    
+    // 批量加载所有股票的复审信息
+    await batchLoadReviewData()
   } catch (error) {
     console.error('加载股票池失败:', error)
     ElMessage.error('加载股票池失败')
   } finally {
     loading.value = false
   }
+}
+
+const batchLoadReviewData = async () => {
+  try {
+    const reviewList = await stockApi.getReviewList({ limit: 500 })
+    
+    if (reviewList.success && reviewList.reviews) {
+      const reviewMap = {}
+      reviewList.reviews.forEach(review => {
+        // 使用多种格式作为 key 进行匹配
+        reviewMap[review.stock_code] = review
+        const pureCode = review.stock_code.replace(/^sh|^sz|^bj/, '')
+        reviewMap[pureCode] = review
+        reviewMap[`sh${pureCode}`] = review
+        reviewMap[`sz${pureCode}`] = review
+        reviewMap[`bj${pureCode}`] = review
+      })
+      
+      // 将复审数据映射到对应的股票行
+      stockPool.value.forEach(stock => {
+        // 尝试多种格式匹配
+        let matchedReview = reviewMap[stock.stock_code]
+        
+        if (!matchedReview) {
+          const pureCode = stock.stock_code.replace(/^sh|^sz|^bj/, '')
+          matchedReview = reviewMap[pureCode] || 
+                         reviewMap[`sh${pureCode}`] || 
+                         reviewMap[`sz${pureCode}`] || 
+                         reviewMap[`bj${pureCode}`]
+        }
+        
+        if (matchedReview) {
+          stock.reviewData = {
+            ...matchedReview,
+            reviewed: true,
+            suggestion: extractSuggestion(matchedReview.review_opinion)
+          }
+        } else {
+          stock.reviewData = { reviewed: false }
+        }
+      })
+    }
+  } catch (error) {
+    console.warn('批量加载复审信息失败:', error)
+    // 失败时为所有股票设置默认值
+    stockPool.value.forEach(stock => {
+      stock.reviewData = { reviewed: false }
+    })
+  }
+}
+
+const extractSuggestion = (opinion) => {
+  if (!opinion) return ''
+  
+  const lines = opinion.split('\n')
+  const suggestionLine = lines.find(line => line.includes('操作建议：'))
+  
+  if (suggestionLine) {
+    return suggestionLine.replace(/.*操作建议：/, '').trim()
+  }
+  
+  return ''
 }
 
 const refreshPool = () => {
@@ -595,6 +1138,22 @@ const refreshPool = () => {
 
 const handleSelectionChange = (selection) => {
   selectedStocks.value = selection
+}
+
+const selectExecutingStocks = () => {
+  if (!stockTableRef.value) return
+  
+  stockTableRef.value.clearSelection()
+  
+  let count = 0
+  paginatedData.value.forEach(row => {
+    if (row.plan_status && ['profit', 'loss', 'neutral'].includes(row.plan_status)) {
+      stockTableRef.value.toggleRowSelection(row, true)
+      count++
+    }
+  })
+  
+  ElMessage.success(`已选中 ${count} 只有执行计划的股票`)
 }
 
 const batchEvaluate = async () => {
@@ -647,8 +1206,211 @@ const batchEvaluate = async () => {
   loadStockPool()
 }
 
+const batchEvaluateAll = async () => {
+  try {
+    await ElMessageBox.confirm('确定要评价所有股票吗？评价将在后台运行，可以继续其他操作。', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+
+  evaluating.value = true
+
+  try {
+    // 调用异步评价API
+    const result = await stockApi.batchEvaluateAsync()
+
+    if (!result.success) {
+      ElNotification.error({
+        title: '启动失败',
+        message: result.message || '无法启动评价任务'
+      })
+      evaluating.value = false
+      return
+    }
+
+    const taskId = result.taskId
+    evaluateProgress.value.total = result.total
+
+    // 保存评价状态到localStorage
+    saveEvaluateStatus({
+      taskId,
+      evaluating: true,
+      progress: {
+        current: 0,
+        total: result.total,
+        percentage: 0,
+        currentStock: ''
+      },
+      startTime: Date.now()
+    })
+
+    ElNotification.info({
+      title: '任务已启动',
+      message: `正在后台评价${result.total}只股票...`,
+      duration: 3000
+    })
+
+    // 开始轮询进度
+    pollEvaluateProgress(taskId)
+
+  } catch (error) {
+    console.error('一键评价启动失败:', error)
+    ElNotification.error({
+      title: '启动失败',
+      message: error.message || '网络错误，请重试'
+    })
+    evaluating.value = false
+  }
+}
+
+let progressTimer = null
+
+const saveEvaluateStatus = (status) => {
+  try {
+    localStorage.setItem(EVALUATE_STORAGE_KEY, JSON.stringify(status))
+  } catch (error) {
+    console.error('保存评价状态失败:', error)
+  }
+}
+
+const clearEvaluateStatus = () => {
+  try {
+    localStorage.removeItem(EVALUATE_STORAGE_KEY)
+  } catch (error) {
+    console.error('清除评价状态失败:', error)
+  }
+}
+
+const restoreEvaluateStatus = () => {
+  try {
+    const saved = localStorage.getItem(EVALUATE_STORAGE_KEY)
+    if (saved) {
+      const status = JSON.parse(saved)
+      // 检查状态是否过期（超过30分钟则清除）
+      if (Date.now() - status.startTime > 30 * 60 * 1000) {
+        clearEvaluateStatus()
+        return null
+      }
+      return status
+    }
+  } catch (error) {
+    console.error('读取评价状态失败:', error)
+  }
+  return null
+}
+
+const pollEvaluateProgress = async (taskId) => {
+  if (progressTimer) {
+    clearInterval(progressTimer)
+  }
+
+  // 每2秒查询一次进度
+  progressTimer = setInterval(async () => {
+    try {
+      const progress = await stockApi.getEvaluateProgress(taskId)
+
+      // 更新进度显示
+      evaluateProgress.value = {
+        current: progress.current || 0,
+        total: progress.total || 0,
+        percentage: progress.percentage || 0,
+        currentStock: progress.currentStock || ''
+      }
+
+      // 检查是否完成或失败
+      if (progress.status === 'completed') {
+        clearInterval(progressTimer)
+        progressTimer = null
+        evaluating.value = false
+
+        // 清除保存的评价状态
+        clearEvaluateStatus()
+
+        ElNotification.success({
+          title: '评价完成',
+          message: progress.message || `成功${progress.successCount}只，失败${progress.failedCount}只`,
+          duration: 5000
+        })
+
+        // 刷新股票池数据
+        await loadStockPool()
+      } else if (progress.status === 'failed') {
+        clearInterval(progressTimer)
+        progressTimer = null
+        evaluating.value = false
+
+        // 清除保存的评价状态
+        clearEvaluateStatus()
+
+        ElNotification.error({
+          title: '评价失败',
+          message: progress.message || '任务执行失败'
+        })
+      }
+
+    } catch (error) {
+      console.error('查询进度失败:', error)
+      // 如果查询失败3次，停止轮询
+      // 这里简单处理：继续轮询直到手动刷新页面
+    }
+  }, 2000)  // 2秒轮询一次
+}
+
+const cleanupData = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '确定要清理垃圾数据吗？此操作将删除：\n1. 股价为 0 的评价记录\n2. 同一天内的重复评价记录\n\n此操作不可恢复，请谨慎操作！',
+      '警告',
+      {
+        confirmButtonText: '确定清理',
+        cancelButtonText: '取消',
+        type: 'warning',
+        distinguishCancelAndClose: true
+      }
+    )
+  } catch (action) {
+    if (action === 'close') return
+  }
+  
+  cleaning.value = true
+  
+  try {
+    const result = await scoreApi.cleanup()
+    
+    ElNotification.success({
+      title: '清理完成',
+      message: `共删除 ${result.total_deleted} 条记录\n- 股价为 0: ${result.deleted_zero_price} 条\n- 重复评价：${result.deleted_duplicates} 条`,
+      duration: 5000
+    })
+    
+    await loadStockPool()
+  } catch (error) {
+    console.error('数据清理失败:', error)
+    ElNotification.error({
+      title: '清理失败',
+      message: error.message || '网络错误，请重试'
+    })
+  } finally {
+    cleaning.value = false
+  }
+}
+
 const progressFormat = (percentage) => {
   return `${percentage}%`
+}
+
+const viewStockIndicator = (stockCode) => {
+  // 跳转到同花顺问财，查看股票技术指标（弹出窗口居中显示）
+  const url = `http://www.iwencai.com/unifiedwap/result?w=${stockCode}`
+  const width = 1200
+  const height = 800
+  const left = (window.screen.width - width) / 2
+  const top = (window.screen.height - height) / 2
+  window.open(url, 'stockIndicator', `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,toolbar=no,resizable=yes`)
 }
 
 const viewDetail = (row) => {
@@ -659,18 +1421,42 @@ const viewDetail = (row) => {
 }
 
 const createPlan = (row) => {
+  const reviewOpinion = row.reviewData?.review_opinion || row.reviewData?.suggestion || ''
   router.push({
     path: '/trade-plan',
     query: { 
       stock_code: row.stock_code, 
       stock_name: row.stock_name,
-      close_price: row.close_price
+      close_price: row.close_price,
+      review_opinion: reviewOpinion
     }
+  })
+}
+
+const backToTradePlan = () => {
+  router.push({
+    path: '/trade-plan'
   })
 }
 
 onMounted(() => {
   loadStockPool()
+
+  // 恢复评价状态
+  const savedStatus = restoreEvaluateStatus()
+  if (savedStatus && savedStatus.evaluating && savedStatus.taskId) {
+    evaluating.value = true
+    evaluateProgress.value = savedStatus.progress
+
+    ElNotification.info({
+      title: '恢复评价任务',
+      message: '检测到有正在进行的评价任务，已自动恢复...',
+      duration: 3000
+    })
+
+    // 继续轮询进度
+    pollEvaluateProgress(savedStatus.taskId)
+  }
 })
 </script>
 
@@ -684,6 +1470,16 @@ onMounted(() => {
 .search-bar {
   display: flex;
   align-items: center;
+  gap: 10px;
+}
+
+.search-bar .el-input {
+  margin-right: 0;
+}
+
+.button-group {
+  display: flex;
+  gap: 8px;
 }
 
 .stat-card {
@@ -747,6 +1543,134 @@ onMounted(() => {
   width: 60px;
   height: 20px;
   flex-shrink: 0;
+  cursor: pointer;
+}
+
+.trend-point {
+  cursor: pointer;
+  transition: r 0.2s;
+}
+
+.trend-point:hover {
+  r: 4;
+}
+
+.trend-tooltip {
+  padding: 8px;
+  min-width: 120px;
+}
+
+.trend-tooltip .tooltip-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #ebeef5;
+  color: #303133;
+}
+
+.trend-tooltip .tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.trend-tooltip .tooltip-date {
+  color: #909399;
+  min-width: 70px;
+}
+
+.trend-tooltip .tooltip-score {
+  color: #e6a23c;
+  font-weight: 600;
+  min-width: 50px;
+  text-align: right;
+}
+
+.trend-tooltip .tooltip-price {
+  color: #409eff;
+  font-weight: 500;
+  min-width: 50px;
+  text-align: right;
+}
+
+.score-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.trend-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: normal;
+}
+
+.trend-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #909399;
+}
+
+.trend-legend .legend-line {
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.trend-legend .legend-line.price {
+  background-color: #409eff;
+}
+
+.trend-legend .legend-line.score {
+  background-color: #e6a23c;
+}
+
+.trend-legend .legend-line.tech {
+  background-color: #67c23a;
+}
+
+.plan-status-cell {
+  text-align: center;
+  line-height: 1.4;
+}
+
+.plan-status-cell .plan-price {
+  font-size: 11px;
+  opacity: 0.75;
+  margin-bottom: 2px;
+}
+
+.plan-status-cell .plan-profit {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plan-status-cell .plan-rate {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.plan-status-cell.profit {
+  color: #f56c6c; /* 盈利红色 */
+}
+
+.plan-status-cell.loss {
+  color: #67c23a; /* 亏损绿色 */
+}
+
+.plan-status-cell.neutral {
+  color: #909399;
+}
+
+.no-plan {
+  color: #c0c4cc;
 }
 
 .plan-status-dot {
@@ -758,11 +1682,11 @@ onMounted(() => {
 }
 
 .plan-status-dot.profit {
-  background-color: #f56c6c;
+  background-color: #f56c6c; /* 盈利红色 */
 }
 
 .plan-status-dot.loss {
-  background-color: #67c23a;
+  background-color: #67c23a; /* 亏损绿色 */
 }
 
 .plan-status-dot.neutral {
@@ -834,5 +1758,179 @@ onMounted(() => {
 
 .operation-buttons .el-button {
   white-space: nowrap;
+  padding: 4px 8px;
+  font-size: 11px;
+  min-width: auto;
+}
+
+.favorite-icon {
+  cursor: pointer;
+  font-size: 16px;
+  color: #c0c4cc;
+  transition: all 0.3s ease;
+}
+
+.favorite-icon:hover {
+  color: #e6a23c;
+  transform: scale(1.2);
+}
+
+.favorite-icon.is-favorite {
+  color: #e6a23c;
+}
+
+/* 复审信息列 - 三行布局 */
+.review-info-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.review-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.review-label {
+  font-weight: 600;
+  color: #909399;
+  min-width: 28px;
+  flex-shrink: 0;
+}
+
+/* 得分行 */
+.review-score-row {
+  justify-content: flex-start;
+}
+
+.review-score-tag {
+  font-weight: 600;
+  min-width: 36px;
+  text-align: center;
+}
+
+.review-rating-tag {
+  font-weight: 500;
+}
+
+/* 意见行 - 可点击 */
+.review-opinion-row {
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.review-opinion-row:hover {
+  background-color: #f0f9ff;
+}
+
+.review-opinion-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #606266;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.view-detail-icon {
+  font-size: 12px;
+  color: #409eff;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.review-opinion-row:hover .view-detail-icon {
+  opacity: 1;
+}
+
+/* 时间行 */
+.review-time-row {
+  color: #909399;
+  font-size: 10px;
+}
+
+.review-time-text {
+  color: #c0c4cc;
+}
+
+/* 未复审状态 */
+.no-review-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+}
+
+.no-review-text {
+  color: #c0c4cc;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* 复审详情弹窗 */
+.review-detail-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+
+.review-detail-content {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.detail-header {
+  margin-bottom: 16px;
+}
+
+.detail-stock-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.detail-stock-info h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #303133;
+}
+
+.detail-rating-badge {
+  display: flex;
+  gap: 8px;
+}
+
+.detail-meta {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+  color: #909399;
+}
+
+.detail-body {
+  background-color: #f5f7fa;
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.review-opinion-full {
+  margin: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #303133;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 50vh;
+  overflow-y: auto;
 }
 </style>

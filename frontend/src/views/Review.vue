@@ -112,8 +112,11 @@
                 </el-table-column>
                 <el-table-column prop="trade_date" label="日期" width="100" />
                 <el-table-column prop="trade_time" label="时间" width="80" />
-                <el-table-column label="操作" width="100">
+                <el-table-column label="操作" width="180">
                   <template #default="scope">
+                    <el-button size="small" type="primary" @click="viewStockIndicator(scope.row.stock_code)">
+                      指标
+                    </el-button>
                     <el-button size="small" type="primary" link @click="viewDetail(scope.row)">
                       详情
                     </el-button>
@@ -203,6 +206,16 @@ const getDirectionType = (direction) => {
 const viewDetail = (row) => {
   currentRecord.value = row
   detailDialogVisible.value = true
+}
+
+const viewStockIndicator = (stockCode) => {
+  // 跳转到同花顺问财，查看股票技术指标（弹出窗口居中显示）
+  const url = `http://www.iwencai.com/unifiedwap/result?w=${stockCode}`
+  const width = 1200
+  const height = 800
+  const left = (window.screen.width - width) / 2
+  const top = (window.screen.height - height) / 2
+  window.open(url, 'stockIndicator', `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,toolbar=no,resizable=yes`)
 }
 
 const loadAccountList = async () => {
@@ -381,12 +394,12 @@ onMounted(async () => {
 }
 
 .profit {
-  color: #67c23a;
+  color: #f56c6c; /* 盈利红色 */
   font-weight: bold;
 }
 
 .loss {
-  color: #f56c6c;
+  color: #67c23a; /* 亏损绿色 */
   font-weight: bold;
 }
 </style>

@@ -271,6 +271,32 @@ def init_database(db_path='trading_system.db'):
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_review_type ON review_record(review_type)')
     print("✓ 复盘记录表(review_record)创建成功")
     
+    # 8. 股票预判记录表
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS stock_prediction (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stock_code VARCHAR(20) NOT NULL,
+        stock_name VARCHAR(50) NOT NULL,
+        current_price DECIMAL(10,4),
+        review_info TEXT,
+        prediction_time DATETIME NOT NULL,
+        prediction_period INT NOT NULL,
+        prediction_direction VARCHAR(10) NOT NULL,
+        target_date DATE NOT NULL,
+        end_price DECIMAL(10,4),
+        actual_direction VARCHAR(10),
+        is_correct TINYINT,
+        status VARCHAR(20) DEFAULT 'pending',
+        create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        update_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        remark TEXT
+    )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_sprd_stock_code ON stock_prediction(stock_code)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_sprd_status ON stock_prediction(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_sprd_target_date ON stock_prediction(target_date)')
+    print("✓ 股票预判记录表(stock_prediction)创建成功")
+    
     conn.commit()
     conn.close()
     

@@ -1036,8 +1036,7 @@ class StockEvaluatorSkills:
             
             self.conn.commit()
 
-            cursor.execute('SELECT LAST_INSERT_ID()')
-            last_id = cursor.fetchone()[0]
+            last_id = cursor.lastrowid
             print(f"✅ 已保存评分记录 ID={last_id}: {stock_name}({stock_code}) - {scores['composite_score']:.0f}分 - {scores['rating']}")
             return True
 

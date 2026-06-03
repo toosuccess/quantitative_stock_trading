@@ -197,6 +197,41 @@ async def get_score_records(limit: int = 20, rating: Optional[str] = None):
         conn.close()
 
 
+@router.post("/scores/cleanup")
+async def cleanup_score_records():
+    """清理垃圾评分记录：删除股价为0的记录和同一天内的重复评价记录"""
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            DELETE FROM score_record WHERE close_price = 0 OR close_price IS NULL
+        ''')
+        deleted_zero_price = cursor.rowcount
+
+        cursor.execute('''
+            DELETE sr1 FROM score_record sr1
+            INNER JOIN score_record sr2
+            ON sr1.stock_code = sr2.stock_code
+            AND sr1.score_date = sr2.score_date
+            AND sr1.id > sr2.id
+        ''')
+        deleted_duplicates = cursor.rowcount
+
+        conn.commit()
+
+        total_deleted = deleted_zero_price + deleted_duplicates
+        return {
+            "total_deleted": total_deleted,
+            "deleted_zero_price": deleted_zero_price,
+            "deleted_duplicates": deleted_duplicates
+        }
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"清理失败: {str(e)}")
+    finally:
+        conn.close()
+
+
 @router.get("/scores/{stock_code}")
 async def get_score_by_code(stock_code: str):
     """获取指定股票的评分历史记录（从数据库读取）"""
@@ -744,7 +779,9 @@ evaluation_tasks = {}
 def run_evaluation_task(task_id: str, stock_codes: list, stock_name_map: dict = None):
     """
     在后台线程中执行评价任务
+    增加单只股票超时控制和数据库连接恢复
     """
+    import signal
     if stock_name_map is None:
         stock_name_map = {}
 
@@ -763,13 +800,18 @@ def run_evaluation_task(task_id: str, stock_codes: list, stock_name_map: dict = 
         results = []
         success_count = 0
         failed_count = 0
+        consecutive_failures = 0
+
+        class TimeoutException(Exception):
+            pass
+
+        def timeout_handler(signum, frame):
+            raise TimeoutException("单只股票评价超时")
 
         for i, stock_code in enumerate(stock_codes):
-            # 获取股票名称
             stock_name = stock_name_map.get(stock_code, '')
             current_stock_display = f"{stock_name} ({stock_code})" if stock_name else stock_code
 
-            # 更新进度
             evaluation_tasks[task_id] = {
                 'status': 'running',
                 'current': i + 1,
@@ -783,14 +825,66 @@ def run_evaluation_task(task_id: str, stock_codes: list, stock_name_map: dict = 
             }
             
             try:
-                result = evaluator.evaluate_stock(stock_code)
-                results.append({
-                    'stock_code': stock_code,
-                    'success': True,
-                    'composite_score': result.get('composite_score', 0),
-                    'rating': result.get('rating', '')
-                })
-                success_count += 1
+                import threading as _threading
+                result_holder = [None]
+                error_holder = [None]
+
+                def _evaluate():
+                    try:
+                        result_holder[0] = evaluator.evaluate_stock(stock_code)
+                    except Exception as ex:
+                        error_holder[0] = ex
+
+                t = _threading.Thread(target=_evaluate)
+                t.daemon = True
+                t.start()
+                t.join(timeout=60)
+
+                if t.is_alive():
+                    results.append({
+                        'stock_code': stock_code,
+                        'success': False,
+                        'error': '评价超时(60秒)'
+                    })
+                    failed_count += 1
+                    consecutive_failures += 1
+                    print(f"⚠️ {current_stock_display} 评价超时，跳过")
+                elif error_holder[0]:
+                    results.append({
+                        'stock_code': stock_code,
+                        'success': False,
+                        'error': str(error_holder[0])
+                    })
+                    failed_count += 1
+                    consecutive_failures += 1
+                    print(f"❌ {current_stock_display} 评价失败: {error_holder[0]}")
+                else:
+                    result = result_holder[0]
+                    results.append({
+                        'stock_code': stock_code,
+                        'success': True,
+                        'composite_score': result.get('composite_score', 0) if result else 0,
+                        'rating': result.get('rating', '') if result else ''
+                    })
+                    success_count += 1
+                    consecutive_failures = 0
+
+                if consecutive_failures >= 10:
+                    print(f"⚠️ 连续{consecutive_failures}只股票评价失败，检查数据库连接...")
+                    try:
+                        evaluator.conn.ping(reconnect=True)
+                        consecutive_failures = 0
+                    except Exception:
+                        try:
+                            evaluator.disconnect()
+                            evaluator.connect()
+                            consecutive_failures = 0
+                        except Exception:
+                            pass
+
+                import time
+                time.sleep(0.3)
+
             except Exception as e:
                 results.append({
                     'stock_code': stock_code,
@@ -798,10 +892,13 @@ def run_evaluation_task(task_id: str, stock_codes: list, stock_name_map: dict = 
                     'error': str(e)
                 })
                 failed_count += 1
+                consecutive_failures += 1
         
-        evaluator.disconnect()
+        try:
+            evaluator.disconnect()
+        except Exception:
+            pass
         
-        # 标记任务完成
         evaluation_tasks[task_id] = {
             'status': 'completed',
             'current': total,
@@ -817,7 +914,6 @@ def run_evaluation_task(task_id: str, stock_codes: list, stock_name_map: dict = 
         }
         
     except Exception as e:
-        # 标记任务失败
         evaluation_tasks[task_id] = {
             'status': 'failed',
             'error': str(e),
@@ -1280,6 +1376,207 @@ async def refresh_news():
     }
 
 
+# ==================== 异步复审任务系统 ====================
+
+review_tasks = {}
+
+def run_review_task(task_id: str, stock_codes: list, stock_name_map: dict = None):
+    if stock_name_map is None:
+        stock_name_map = {}
+
+    try:
+        import sys
+        import os
+        skills_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'skills')
+        sys.path.insert(0, skills_path)
+
+        from stock_review_skills import StockReviewSkills
+
+        reviewer = StockReviewSkills()
+        reviewer.connect()
+
+        total = len(stock_codes)
+        results = []
+        success_count = 0
+        failed_count = 0
+        consecutive_failures = 0
+
+        for i, stock_code in enumerate(stock_codes):
+            stock_name = stock_name_map.get(stock_code, '')
+            current_stock_display = f"{stock_name} ({stock_code})" if stock_name else stock_code
+
+            review_tasks[task_id] = {
+                'status': 'running',
+                'current': i + 1,
+                'total': total,
+                'percentage': round((i + 1) / total * 100, 1),
+                'currentStock': current_stock_display,
+                'successCount': success_count,
+                'failedCount': failed_count,
+                'startTime': review_tasks[task_id]['startTime'],
+                'message': f'正在复审 {current_stock_display} ({i+1}/{total})'
+            }
+
+            try:
+                import threading as _threading
+                result_holder = [None]
+                error_holder = [None]
+
+                def _review():
+                    try:
+                        result_holder[0] = reviewer.review_single_stock(stock_code)
+                    except Exception as ex:
+                        error_holder[0] = ex
+
+                t = _threading.Thread(target=_review)
+                t.daemon = True
+                t.start()
+                t.join(timeout=60)
+
+                if t.is_alive():
+                    results.append({
+                        'stock_code': stock_code,
+                        'success': False,
+                        'error': '复审超时(60秒)'
+                    })
+                    failed_count += 1
+                    consecutive_failures += 1
+                    print(f"⚠️ {current_stock_display} 复审超时，跳过")
+                elif error_holder[0]:
+                    results.append({
+                        'stock_code': stock_code,
+                        'success': False,
+                        'error': str(error_holder[0])
+                    })
+                    failed_count += 1
+                    consecutive_failures += 1
+                    print(f"❌ {current_stock_display} 复审失败: {error_holder[0]}")
+                else:
+                    result = result_holder[0]
+                    results.append({
+                        'stock_code': stock_code,
+                        'success': True,
+                        'review_score': result.get('review_score', 0) if result else 0,
+                        'rating': result.get('rating', '') if result else ''
+                    })
+                    success_count += 1
+                    consecutive_failures = 0
+
+                if consecutive_failures >= 10:
+                    print(f"⚠️ 连续{consecutive_failures}只股票复审失败，检查数据库连接...")
+                    try:
+                        reviewer.conn.ping(reconnect=True)
+                        consecutive_failures = 0
+                    except Exception:
+                        try:
+                            reviewer.disconnect()
+                            reviewer.connect()
+                            consecutive_failures = 0
+                        except Exception:
+                            pass
+
+                import time
+                time.sleep(0.3)
+
+            except Exception as e:
+                results.append({
+                    'stock_code': stock_code,
+                    'success': False,
+                    'error': str(e)
+                })
+                failed_count += 1
+                consecutive_failures += 1
+
+        try:
+            reviewer.disconnect()
+        except Exception:
+            pass
+
+        review_tasks[task_id] = {
+            'status': 'completed',
+            'current': total,
+            'total': total,
+            'percentage': 100.0,
+            'currentStock': '',
+            'successCount': success_count,
+            'failedCount': failed_count,
+            'startTime': review_tasks[task_id]['startTime'],
+            'endTime': datetime.now().isoformat(),
+            'message': f'复审完成，成功{success_count}只，失败{failed_count}只',
+            'results': results
+        }
+
+    except Exception as e:
+        review_tasks[task_id] = {
+            'status': 'failed',
+            'error': str(e),
+            'message': f'复审任务失败: {str(e)}'
+        }
+
+
+@router.post("/stocks/batch-review-async")
+async def start_batch_review_async():
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT sbi.stock_code, sbi.stock_name
+            FROM stock_basic_info sbi
+            WHERE sbi.review_score IS NULL
+              AND sbi.stock_code IS NOT NULL
+              AND sbi.stock_code != ''
+        ''')
+        rows = cursor.fetchall()
+        stock_codes = [row['stock_code'] for row in rows]
+        stock_name_map = {row['stock_code']: row['stock_name'] for row in rows}
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not stock_codes:
+        return {
+            'success': False,
+            'message': '没有找到需要复审的股票（所有股票已复审）'
+        }
+
+    task_id = str(uuid.uuid4())
+    review_tasks[task_id] = {
+        'status': 'pending',
+        'current': 0,
+        'total': len(stock_codes),
+        'percentage': 0.0,
+        'currentStock': '',
+        'successCount': 0,
+        'failedCount': 0,
+        'startTime': datetime.now().isoformat(),
+        'message': '复审任务已创建，等待执行...'
+    }
+
+    thread = threading.Thread(target=run_review_task, args=(task_id, stock_codes, stock_name_map))
+    thread.daemon = True
+    thread.start()
+
+    return {
+        'success': True,
+        'taskId': task_id,
+        'message': f'已启动复审任务，共{len(stock_codes)}只股票待复审',
+        'total': len(stock_codes)
+    }
+
+
+@router.get("/stocks/review-progress/{task_id}")
+async def get_review_progress(task_id: str):
+    if task_id not in review_tasks:
+        raise HTTPException(status_code=404, detail='复审任务不存在')
+
+    task = review_tasks[task_id]
+
+    return {
+        'taskId': task_id,
+        **task
+    }
+
+
 # ==================== 复审信息查询API（只读） ====================
 
 @router.get("/stocks/{stock_code}/review-info")
@@ -1307,8 +1604,8 @@ async def get_stock_review_info(stock_code: str):
                 review_detail,
                 conform_score
             FROM stock_basic_info 
-            WHERE stock_code = %s OR stock_code = %s
-        ''', (pure_code, pure_code.upper()))
+            WHERE stock_code = %s OR stock_code = %s OR stock_code = %s OR stock_code = %s OR stock_code = %s
+        ''', (pure_code, pure_code.upper(), f'sh{pure_code}', f'sz{pure_code}', f'bj{pure_code}'))
         
         result = cursor.fetchone()
         
@@ -1341,8 +1638,8 @@ async def get_stock_review_info(stock_code: str):
             'stock_name': result['stock_name'],
             'industry': result.get('industry'),
             'reviewed': True,
-            'review_score': float(result['review_score']) if result['review_score'] else None,
-            'review_rating': review_detail.get('scores_breakdown', {}).get('total_score', {}).get('rating') or _get_rating_from_score(float(result['review_score'])),
+            'review_score': float(result['review_score']) if result['review_score'] is not None else None,
+            'review_rating': review_detail.get('scores_breakdown', {}).get('total_score', {}).get('rating') or _get_rating_from_score(float(result['review_score']) if result['review_score'] is not None else 0),
             'review_opinion': result['review_opinion'],
             'review_time': str(result['review_time']) if result['review_time'] else None,
             'review_detail': review_detail,
@@ -1437,7 +1734,7 @@ async def get_review_list(
                 'stock_code': row['stock_code'],
                 'stock_name': row['stock_name'],
                 'industry': row.get('industry'),
-                'review_score': float(row['review_score']) if row['review_score'] else None,
+                'review_score': float(row['review_score']) if row['review_score'] is not None else None,
                 'review_time': str(row['review_time']) if row['review_time'] else None,
                 'review_opinion': row.get('review_opinion'),
                 'rating': _clean_json_value(row.get('rating')),
@@ -1515,5 +1812,409 @@ def _clean_json_value(value):
             return float(value)
         except:
             return value
+
+
+# ==================== 股票预判功能 ====================
+
+class PredictionCreateRequest(BaseModel):
+    stock_code: str
+    stock_name: str
+    current_price: Optional[float] = None
+    review_info: Optional[str] = None
+    prediction_period: int
+    prediction_direction: str
+
+
+class PredictionSettleRequest(BaseModel):
+    prediction_id: Optional[int] = None
+
+
+@router.post("/stocks/prediction")
+async def create_prediction(request: PredictionCreateRequest):
+    """创建股票预判记录"""
+    from datetime import datetime, timedelta
+    import re
+
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        pure_code = re.sub(r'^(sh|sz|bj)', '', request.stock_code.lower())
+
+        current_price = request.current_price
+        if not current_price:
+            fetcher = DataFetcher()
+            fetcher.connect()
+            try:
+                realtime = fetcher.get_stock_realtime(pure_code)
+                if realtime and realtime.get('price'):
+                    current_price = realtime['price']
+            finally:
+                fetcher.disconnect()
+
+        if not current_price:
+            cursor.execute(
+                'SELECT current_price FROM stock_basic_info WHERE stock_code = %s',
+                (pure_code,)
+            )
+            row = cursor.fetchone()
+            if row and row['current_price']:
+                current_price = float(row['current_price'])
+
+        prediction_time = datetime.now()
+        target_date = (prediction_time + timedelta(days=request.prediction_period)).date()
+
+        cursor.execute('''
+            INSERT INTO stock_prediction
+            (stock_code, stock_name, current_price, review_info, prediction_time,
+             prediction_period, prediction_direction, target_date, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (
+            pure_code, request.stock_name, current_price, request.review_info,
+            prediction_time, request.prediction_period, request.prediction_direction,
+            target_date, 'pending'
+        ))
+        conn.commit()
+
+        prediction_id = cursor.lastrowid
+
+        return {
+            'success': True,
+            'message': '预判记录创建成功',
+            'prediction_id': prediction_id,
+            'current_price': current_price,
+            'target_date': str(target_date)
+        }
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f'创建预判记录失败: {str(e)}')
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@router.get("/stocks/prediction/{stock_code}")
+async def get_predictions(stock_code: str):
+    """查询某只股票的预判记录"""
+    import re
+
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        pure_code = re.sub(r'^(sh|sz|bj)', '', stock_code.lower())
+
+        cursor.execute('''
+            SELECT * FROM stock_prediction
+            WHERE stock_code = %s
+            ORDER BY prediction_time DESC
+        ''', (pure_code,))
+        predictions = cursor.fetchall()
+
+        for p in predictions:
+            if p.get('prediction_time'):
+                p['prediction_time'] = str(p['prediction_time'])
+            if p.get('target_date'):
+                p['target_date'] = str(p['target_date'])
+            if p.get('create_time'):
+                p['create_time'] = str(p['create_time'])
+            if p.get('update_time'):
+                p['update_time'] = str(p['update_time'])
+
+        return {
+            'success': True,
+            'stock_code': pure_code,
+            'predictions': predictions,
+            'count': len(predictions)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'查询预判记录失败: {str(e)}')
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@router.get("/stocks/prediction-stats")
+async def get_prediction_stats():
+    """批量获取所有股票的预判统计"""
+    import re
+
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT
+                stock_code,
+                COUNT(*) as total_count,
+                SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
+                SUM(CASE WHEN is_correct = -1 THEN 1 ELSE 0 END) as flat_count,
+                SUM(CASE WHEN status = 'settled' AND is_correct != -1 THEN 1 ELSE 0 END) as settled_count,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
+            FROM stock_prediction
+            GROUP BY stock_code
+        ''')
+        stats = cursor.fetchall()
+
+        stats_map = {}
+        for s in stats:
+            code = s['stock_code']
+            total = s['total_count'] or 0
+            correct = s['correct_count'] or 0
+            settled = s['settled_count'] or 0
+            success_rate = round(correct / settled * 100, 1) if settled > 0 else 0
+            stats_map[code] = {
+                'total_count': total,
+                'correct_count': correct,
+                'settled_count': settled,
+                'pending_count': s['pending_count'] or 0,
+                'success_rate': success_rate
+            }
+
+        return {
+            'success': True,
+            'stats': stats_map
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'查询预判统计失败: {str(e)}')
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@router.post("/stocks/prediction/settle")
+async def settle_prediction(request: PredictionSettleRequest = None):
+    """结算到期的预判记录（获取最新股价，判断预测是否正确）"""
+    from datetime import date
+
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        if request and request.prediction_id:
+            cursor.execute(
+                'SELECT * FROM stock_prediction WHERE id = %s AND status = %s',
+                (request.prediction_id, 'pending')
+            )
+        else:
+            cursor.execute('''
+                SELECT * FROM stock_prediction
+                WHERE status = %s AND target_date <= %s
+            ''', ('pending', date.today()))
+
+        pending_predictions = cursor.fetchall()
+
+        if not pending_predictions:
+            return {
+                'success': True,
+                'message': '没有需要结算的预判记录',
+                'settled_count': 0
+            }
+
+        fetcher = DataFetcher()
+        fetcher.connect()
+
+        settled_count = 0
+        failed_count = 0
+        skipped_not_due = 0
+
+        for pred in pending_predictions:
+            try:
+                is_manual = request and request.prediction_id
+                if not is_manual and pred.get('target_date') and pred['target_date'] > date.today():
+                    skipped_not_due += 1
+                    continue
+
+                realtime = fetcher.get_stock_realtime(pred['stock_code'])
+                if not realtime or not realtime.get('price'):
+                    failed_count += 1
+                    continue
+
+                end_price = realtime['price']
+                start_price = float(pred['current_price']) if pred['current_price'] else 0
+
+                if start_price > 0:
+                    change_pct = (end_price - start_price) / start_price * 100
+
+                    if change_pct > 0.5:
+                        actual_direction = '看涨'
+                    elif change_pct < -0.5:
+                        actual_direction = '看跌'
+                    else:
+                        actual_direction = '持平'
+
+                    if actual_direction == '持平':
+                        is_correct = -1
+                    elif pred['prediction_direction'] == actual_direction:
+                        is_correct = 1
+                    else:
+                        is_correct = 0
+
+                    cursor.execute('''
+                        UPDATE stock_prediction
+                        SET end_price = %s, actual_direction = %s,
+                            is_correct = %s, status = %s
+                        WHERE id = %s
+                    ''', (end_price, actual_direction, is_correct, 'settled', pred['id']))
+                    settled_count += 1
+                else:
+                    failed_count += 1
+            except Exception as e:
+                print(f"结算预判 {pred['id']} 失败: {e}")
+                failed_count += 1
+
+        fetcher.disconnect()
+        conn.commit()
+
+        msg_parts = []
+        if settled_count > 0:
+            msg_parts.append(f'成功结算{settled_count}条')
+        if skipped_not_due > 0:
+            msg_parts.append(f'{skipped_not_due}条尚未到期已跳过')
+        if failed_count > 0:
+            msg_parts.append(f'{failed_count}条失败')
+
+        return {
+            'success': True,
+            'message': '，'.join(msg_parts) if msg_parts else '没有需要结算的记录',
+            'settled_count': settled_count,
+            'failed_count': failed_count,
+            'skipped_not_due': skipped_not_due
+        }
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f'结算预判记录失败: {str(e)}')
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@router.delete("/stocks/prediction/{prediction_id}")
+async def delete_prediction(prediction_id: int):
+    """删除预判记录"""
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('DELETE FROM stock_prediction WHERE id = %s', (prediction_id,))
+        conn.commit()
+
+        if cursor.rowcount > 0:
+            return {'success': True, 'message': '预判记录已删除'}
+        else:
+            raise HTTPException(status_code=404, detail='预判记录不存在')
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f'删除预判记录失败: {str(e)}')
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@router.get("/dashboard/todos")
+async def get_dashboard_todos():
+    """获取首页待办事项数据"""
+    conn = pymysql.connect(**MYSQL_CONFIG, cursorclass=DictCursor)
+    cursor = conn.cursor()
+    try:
+        # 1. 待执行交易计划
+        cursor.execute('''
+            SELECT plan_id, stock_code, stock_name, plan_name, status, create_time
+            FROM trade_plan
+            WHERE status = 'pending'
+            ORDER BY create_time DESC
+            LIMIT 5
+        ''')
+        pending_plans = cursor.fetchall()
+        for p in pending_plans:
+            if p.get('create_time'):
+                p['create_time'] = str(p['create_time'])
+            # 从 plan_name 推断交易方向
+            plan_name = (p.get('plan_name') or '').lower()
+            if '卖出' in plan_name or 'sell' in plan_name:
+                p['trade_direction'] = 'sell'
+            else:
+                p['trade_direction'] = 'buy'
+
+        cursor.execute('SELECT COUNT(*) as cnt FROM trade_plan WHERE status = %s', ('pending',))
+        pending_plans_count = cursor.fetchone()['cnt']
+
+        # 2. 待判定预判
+        cursor.execute('''
+            SELECT sp.id, sp.stock_code, sp.prediction_direction, sp.current_price, sp.target_date, sp.prediction_time,
+                   sbi.stock_name
+            FROM stock_prediction sp
+            LEFT JOIN stock_basic_info sbi ON REPLACE(REPLACE(sp.stock_code, 'sh', ''), 'sz', '') = REPLACE(REPLACE(sbi.stock_code, 'sh', ''), 'sz', '')
+            WHERE sp.status = 'pending'
+            ORDER BY sp.prediction_time DESC
+            LIMIT 5
+        ''')
+        pending_predictions = cursor.fetchall()
+        for p in pending_predictions:
+            if p.get('prediction_time'):
+                p['prediction_time'] = str(p['prediction_time'])
+            if p.get('target_date'):
+                p['target_date'] = str(p['target_date'])
+
+        cursor.execute('SELECT COUNT(*) as cnt FROM stock_prediction WHERE status = %s', ('pending',))
+        pending_predictions_count = cursor.fetchone()['cnt']
+
+        # 3. 待复审股票（从未评分或评分日期超过7天的股票）
+        cursor.execute('''
+            SELECT s.stock_code, s.stock_name, sr.last_score_date
+            FROM stock_basic_info s
+            LEFT JOIN (
+                SELECT stock_code, MAX(score_date) as last_score_date
+                FROM score_record
+                GROUP BY stock_code
+            ) sr ON REPLACE(REPLACE(s.stock_code, 'sh', ''), 'sz', '') = REPLACE(REPLACE(sr.stock_code, 'sh', ''), 'sz', '')
+            WHERE sr.last_score_date IS NULL OR sr.last_score_date < DATE_SUB(NOW(), INTERVAL 7 DAY)
+            ORDER BY sr.last_score_date ASC
+            LIMIT 5
+        ''')
+        pending_reviews = cursor.fetchall()
+        for r in pending_reviews:
+            if r.get('last_score_date'):
+                r['last_score_date'] = str(r['last_score_date'])
+
+        cursor.execute('''
+            SELECT COUNT(*) as cnt FROM stock_basic_info s
+            LEFT JOIN (
+                SELECT stock_code, MAX(score_date) as last_score_date
+                FROM score_record
+                GROUP BY stock_code
+            ) sr ON REPLACE(REPLACE(s.stock_code, 'sh', ''), 'sz', '') = REPLACE(REPLACE(sr.stock_code, 'sh', ''), 'sz', '')
+            WHERE sr.last_score_date IS NULL OR sr.last_score_date < DATE_SUB(NOW(), INTERVAL 7 DAY)
+        ''')
+        pending_reviews_count = cursor.fetchone()['cnt']
+
+        # 4. 统计数据
+        cursor.execute('SELECT COUNT(DISTINCT stock_code) as cnt FROM score_record')
+        scored_count = cursor.fetchone()['cnt']
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM trade_plan WHERE status IN ('pending', 'executing')")
+        active_plans_count = cursor.fetchone()['cnt']
+
+        return {
+            'success': True,
+            'pending_plans': {
+                'items': pending_plans,
+                'count': pending_plans_count
+            },
+            'pending_predictions': {
+                'items': pending_predictions,
+                'count': pending_predictions_count
+            },
+            'pending_reviews': {
+                'items': pending_reviews,
+                'count': pending_reviews_count
+            },
+            'stats': {
+                'scored_stocks': scored_count,
+                'active_plans': active_plans_count
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'获取待办事项失败: {str(e)}')
+    finally:
+        cursor.close()
+        conn.close()
 
 

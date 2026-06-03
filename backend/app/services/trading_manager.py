@@ -1422,6 +1422,16 @@ class TradingManager:
             sell_count = trade_result['sell_count'] if trade_result else 0
             buy_count = trade_result['buy_count'] if trade_result else 0
 
+            # 统计盈利的卖出交易数
+            cursor.execute(f'''
+                SELECT COUNT(*) as win_count
+                FROM trade_record
+                WHERE trade_type = '卖出' AND trade_amount > 0
+                {("AND account_id = %s" if account_id else "")}
+            ''', params)
+            win_count_result = cursor.fetchone()
+            win_count = win_count_result['win_count'] if win_count_result else 0
+
             if sell_count == 0:
                 win_rate = 0.0
             elif net_profit > 0:
@@ -1438,6 +1448,7 @@ class TradingManager:
                 'total_trades': trade_result['total_trades'] if trade_result else 0,
                 'buy_count': buy_count,
                 'sell_count': sell_count,
+                'win_count': win_count,
                 'total_buy_amount': round(total_buy_amount, 2),
                 'total_sell_amount': round(total_sell_amount, 2),
                 'net_profit': round(net_profit, 2),
@@ -1450,6 +1461,7 @@ class TradingManager:
                 'total_trades': 0,
                 'buy_count': 0,
                 'sell_count': 0,
+                'win_count': 0,
                 'total_buy_amount': 0,
                 'total_sell_amount': 0,
                 'net_profit': 0,

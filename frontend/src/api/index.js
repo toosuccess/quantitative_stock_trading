@@ -25,10 +25,18 @@ export const stockApi = {
   getRealtime: (code) => api.get(`/stocks/realtime/${code}`),
   getIndicators: (code) => api.get(`/stocks/indicators/${code}`),
   batchEvaluate: () => api.post('/stocks/batch-evaluate'),
-  batchEvaluateAsync: () => api.post('/stocks/batch-evaluate-async'),
+  batchEvaluateAsync: () => api.post('/stocks/batch-evaluate-async', {}, { timeout: 30000 }),
   getEvaluateProgress: (taskId) => api.get(`/stocks/evaluate-progress/${taskId}`),
+  batchReviewAsync: () => api.post('/stocks/batch-review-async', {}, { timeout: 30000 }),
+  getReviewProgress: (taskId) => api.get(`/stocks/review-progress/${taskId}`),
   getReviewInfo: (stockCode) => api.get(`/stocks/${stockCode}/review-info`),
-  getReviewList: (params = {}) => api.get('/stocks/review-list', { params })
+  getReviewList: (params = {}) => api.get('/stocks/review-list', { params }),
+  createPrediction: (data) => api.post('/stocks/prediction', data),
+  getPredictions: (stockCode) => api.get(`/stocks/prediction/${stockCode}`),
+  getPredictionStats: () => api.get('/stocks/prediction-stats'),
+  settlePredictions: (predictionId) => api.post('/stocks/prediction/settle', predictionId ? { prediction_id: predictionId } : {}),
+  deletePrediction: (predictionId) => api.delete(`/stocks/prediction/${predictionId}`),
+  getDashboardTodos: () => api.get('/dashboard/todos')
 }
 
 export const newsApi = {

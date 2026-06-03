@@ -1,6 +1,7 @@
 """
 个人专属交易系统 - FastAPI入口
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -98,9 +99,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*').split(',')
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,29 +1,33 @@
 """
 数据库配置文件
 支持 SQLite 和 MySQL 切换
+敏感信息通过环境变量读取
 """
 import os
+from pathlib import Path
 
-# 数据库类型: 'mysql' 或 'sqlite'
+_env_file = Path(__file__).resolve().parent.parent.parent / '.env'
+if _env_file.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env_file, override=True)
+
 DB_TYPE = os.getenv('DB_TYPE', 'mysql')
 
-# MySQL 配置
 MYSQL_CONFIG = {
-    'host': '118.25.137.191',
-    'user': 'root',
-    'password': 'Root@2026Mysql!',
-    'database': 'stock',
-    'charset': 'utf8mb4'
+    'host': os.getenv('MYSQL_HOST', '118.25.137.191'),
+    'user': os.getenv('MYSQL_USER', 'root'),
+    'password': os.getenv('MYSQL_PASSWORD', 'Root@2026Mysql!'),
+    'database': os.getenv('MYSQL_DATABASE', 'stock'),
+    'charset': 'utf8mb4',
+    'port': int(os.getenv('MYSQL_PORT', '3306'))
 }
 
-# SQLite 配置（保留作为备份）
 SQLITE_CONFIG = {
     'db_path': os.getenv('SQLITE_DB_PATH', 'database/trading_system.db')
 }
 
 
 def get_db_config():
-    """获取当前数据库配置"""
     if DB_TYPE == 'mysql':
         return {
             'type': 'mysql',
@@ -37,10 +41,9 @@ def get_db_config():
 
 
 def create_connection():
-    """创建数据库连接"""
     import pymysql
     import sqlite3
-    
+
     if DB_TYPE == 'mysql':
         conn = pymysql.connect(**MYSQL_CONFIG)
         return conn

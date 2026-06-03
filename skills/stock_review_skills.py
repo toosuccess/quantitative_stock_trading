@@ -1090,7 +1090,8 @@ class StockReviewSkills:
                 'deviation': price_data.get('deviation', 0)
             },
             'review_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'veto_triggered': kline_score.get('veto_triggered', False)
+            'veto_triggered': kline_score.get('veto_triggered', False),
+            'rating': rating
         }
         
         result = {
